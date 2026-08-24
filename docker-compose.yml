@@ -1,0 +1,48 @@
+# Local development dependencies.
+#
+# Everything here is a stand-in for something AWS runs in dev and prod:
+#   postgres   → Aurora Serverless v2 + pgvector
+#   localstack → S3, DynamoDB, SQS, EventBridge, Step Functions
+#
+# Bedrock has no local emulator. That gap is closed by the LLMProvider port and
+# its mock/recorded adapters (Phase 0 §K), not by another container.
+
+services:
+  postgres:
+    # pgvector/pgvector ships the extension pre-built, so Phase 4 needs no
+    # image change — only a migration that runs CREATE EXTENSION.
+    image: pgvector/pgvector:pg16
+    container_name: cloudguard-postgres
+    environment:
+      POSTGRES_USER: cloudguard
+      POSTGRES_PASSWORD: cloudguard
+      POSTGRES_DB: cloudguard
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Depending on port 5432 being open is not the same as the database being
+      # ready to accept queries; pg_isready is.
+      test: ['CMD-SHELL', 'pg_isready -U cloudguard -d cloudguard']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  localstack:
+    image: localstack/localstack:3
+    container_name: cloudguard-localstack
+    environment:
+      SERVICES: s3,dynamodb,sqs,events,stepfunctions,secretsmanager
+      DEBUG: '0'
+      PERSISTENCE: '0'
+    ports:
+      - '4566:4566'
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -sf http://localhost:4566/_localstack/health || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:

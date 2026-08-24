@@ -1,0 +1,99 @@
+@import 'tailwindcss';
+
+/*
+  Design direction (Phase 0 §39): enterprise security console, not consumer SaaS.
+  No gradients, no neon, no oversized rounded cards. Dense, quiet, legible at
+  small sizes because compliance work means reading a lot of rows.
+
+  Two decisions that come from the subject matter rather than from taste:
+
+  1. Severity is a real, ordered property of this product's data, so it gets a
+     real, ordered four-step ramp used identically everywhere it appears. It is
+     information, not decoration — which is why there is no fifth "accent"
+     colour competing with it.
+
+  2. Identifiers are the load-bearing content here: V-104, AC-2,
+     ISO 27001 A.9.2.5, document ids, risk scores. They are set in mono so they
+     read as identifiers and can be scanned down a column. Prose is set in the
+     sans face. The distinction is functional.
+
+  Signature element: the severity spine — a 3px rule in the left gutter of a
+  record carrying its severity colour. One memorable device; everything else
+  stays quiet.
+*/
+
+@theme {
+  /* Surfaces — cool neutral, low chroma */
+  --color-canvas: #f7f8f9;
+  --color-surface: #ffffff;
+  --color-surface-sunken: #eef0f2;
+  --color-line: #dcdfe3;
+  --color-line-strong: #c3c8ce;
+
+  /* Ink */
+  --color-ink: #14181d;
+  --color-ink-muted: #5b636d;
+  --color-ink-subtle: #868e98;
+  --color-ink-inverse: #f7f8f9;
+
+  /* Navigation rail — deliberately darker than the canvas so the workspace,
+     not the chrome, is where the eye lands. */
+  --color-rail: #1b2027;
+  --color-rail-hover: #262d36;
+  --color-rail-active: #323b46;
+
+  /* Severity ramp. Ordered, and used only for severity. */
+  --color-severity-critical: #a4193d;
+  --color-severity-high: #c2410c;
+  --color-severity-medium: #a16207;
+  --color-severity-low: #15706b;
+
+  /* System states */
+  --color-ok: #15706b;
+  --color-warn: #a16207;
+  --color-error: #a4193d;
+
+  --radius-sm: 2px;
+  --radius-md: 4px;
+
+  --font-sans:
+    var(--font-plex-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, 'SF Mono', monospace;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Quality floor: keyboard focus is always visible, and it is the same
+   indicator everywhere so it is learnable. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Numeric columns must align. Tabular figures are not a stylistic preference
+   in a table of risk scores; they are what makes the column scannable. */
+.numeric {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}

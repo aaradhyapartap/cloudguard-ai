@@ -1,0 +1,36 @@
+# Secrets — the single most important entries in this file
+.env
+.env.*
+!.env.example
+!.env.local.example
+*.pem
+*.key
+credentials
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# Infrastructure
+cdk.out/
+.terraform/
+*.tfstate*
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/

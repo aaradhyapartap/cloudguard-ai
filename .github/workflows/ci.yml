@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '22'
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: cloudguard
+          POSTGRES_PASSWORD: cloudguard
+          POSTGRES_DB: cloudguard
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U cloudguard"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install
+        run: cd backend && pip install -e ".[dev]" psycopg2-binary
+      - name: Lint
+        run: cd backend && ruff check .
+      - name: Type check
+        run: cd backend && mypy app
+      - name: Migrate
+        run: cd backend && alembic upgrade head
+        env: { DB_HOST: localhost }
+      # Isolation tests run against real PostgreSQL because Row-Level Security
+      # does not exist in SQLite. Faking this would test nothing.
+      - name: Test
+        run: cd backend && pytest --cov=app --cov-report=term-missing
+        env: { DB_HOST: localhost, RUN_DB_TESTS: '1' }
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: cd frontend && npm ci
+      - run: cd frontend && npm run lint
+      - run: cd frontend && npm run typecheck
+      - run: cd frontend && npm run build
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }   # gitleaks needs history to scan it
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Dependency audit (Python)
+        run: pip install pip-audit && pip-audit -r <(cd backend && pip install -e . --dry-run --quiet 2>/dev/null; echo) || true
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env: { GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Dependency audit (npm)
+        run: cd frontend && npm audit --audit-level=high || true

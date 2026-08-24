@@ -1,0 +1,105 @@
+[project]
+name = "cloudguard-backend"
+version = "0.1.0"
+description = "CloudGuard AI — agentic audit & compliance intelligence platform"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    # PyJWT with the crypto extra: RS256 verification of Cognito tokens needs
+    # `cryptography`, which the base package does not pull in.
+    "pyjwt[crypto]>=2.10",
+    # Async JWKS fetching. A blocking HTTP call inside an async Lambda handler
+    # stalls the event loop for every concurrent request, not just its own.
+    "httpx>=0.28",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "structlog>=24.4",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "mangum>=0.19",
+    "uvicorn[standard]>=0.32",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "httpx>=0.28",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+# ---------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "N",         # pep8-naming
+    "UP",        # pyupgrade
+    "B",         # bugbear
+    "ASYNC",     # async correctness
+    "S",         # bandit security rules
+    "T20",       # no print()
+    "RUF",
+]
+ignore = [
+    "S101",  # assert is fine in tests
+    "B008",  # FastAPI Depends() in defaults is the documented pattern
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S105", "S106"]
+# `token_use` / `token_type` are JWT claim names, not secrets. Scoped to the
+# two files that legitimately set them, so a real hardcoded credential
+# anywhere else still fails the build.
+"app/models/identity.py" = ["S105"]
+"app/adapters/local/identity.py" = ["S105", "S106"]
+"app/adapters/cognito/identity.py" = ["S105", "S106"]
+
+# ARCHITECTURE GUARDRAIL (see ADR-0013).
+# The service layer must never import a cloud SDK directly. Adapters do that.
+# This is enforced mechanically rather than by code review.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"boto3".msg = "Import cloud SDKs only inside app/adapters/. Services depend on app/ports/."
+"botocore".msg = "Import cloud SDKs only inside app/adapters/. Services depend on app/ports/."
+
+# ---------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["mangum.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# One loop for the whole session. The SQLAlchemy async engine holds pooled
+# connections bound to the loop that created them; a per-test loop makes
+# the second test that touches the database fail with "attached to a
+# different loop".
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+markers = [
+    "integration: requires a live PostgreSQL instance (docker compose up postgres)",
+]
+addopts = "-q --strict-markers"
