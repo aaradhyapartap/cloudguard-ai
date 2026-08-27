@@ -22,7 +22,7 @@ from app.models.enums import Role
 from app.models.principal import Principal
 from app.repositories.database import dispose_engine
 from fastapi.testclient import TestClient
-from tests.conftest import ORG_A, bearer, skip_without_database
+from conftest import ORG_A, bearer, skip_without_database
 
 pytestmark = [pytest.mark.integration, skip_without_database]
 
