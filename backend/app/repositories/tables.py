@@ -58,9 +58,7 @@ class Organization(Base):
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     slug: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
-    settings: Mapped[dict[str, object]] = mapped_column(
-        JSONB, nullable=False, server_default="{}"
-    )
+    settings: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False
@@ -131,11 +129,57 @@ class Document(Base):
     )
     department: Mapped[str | None] = mapped_column(String(120))
     source: Mapped[str | None] = mapped_column(String(200))
-    tags: Mapped[dict[str, object]] = mapped_column(
-        JSONB, nullable=False, server_default="[]"
-    )
+    tags: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False, server_default="[]")
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class DocumentChunk(Base):
+    __tablename__ = "document_chunks"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_id",
+            "chunk_index",
+            name="uq_document_chunks_document_index",
+        ),
+        Index(
+            "ix_document_chunks_org_document",
+            "organization_id",
+            "document_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    document_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chunk_index: Mapped[int] = mapped_column(nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    token_count: Mapped[int] = mapped_column(
+        nullable=False,
+        server_default="0",
+    )
+    chunk_metadata: Mapped[dict[str, object]] = mapped_column(
+        "metadata",
+        JSONB,
+        nullable=False,
+        server_default="{}",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(),
+        nullable=False,
     )
