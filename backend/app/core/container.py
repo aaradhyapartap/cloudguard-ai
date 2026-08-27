@@ -103,16 +103,26 @@ def _build_document_store(settings: Settings) -> DocumentStore:
         case "memory":
             return InMemoryDocumentStore()
         case "s3":
-            raise AdapterNotAvailableError("DocumentStore", "s3", "Phase 3")
+            from app.adapters.aws.document_store import S3DocumentStore
 
+            return S3DocumentStore(
+                bucket=settings.aws.documents_bucket,
+                region=settings.aws.region,
+                endpoint_url=settings.aws.endpoint_url,
+            )
 
 def _build_event_publisher(settings: Settings) -> EventPublisher:
     match settings.event_publisher:
         case "memory":
             return InMemoryEventPublisher()
         case "eventbridge":
-            raise AdapterNotAvailableError("EventPublisher", "eventbridge", "Phase 3")
+            from app.adapters.aws.event_publisher import EventBridgePublisher
 
+            return EventBridgePublisher(
+                bus_name=settings.aws.event_bus_name,
+                region=settings.aws.region,
+                endpoint_url=settings.aws.endpoint_url,
+            )
 
 def build_container(settings: Settings | None = None) -> Container:
     resolved = settings or get_settings()

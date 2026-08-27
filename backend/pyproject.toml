@@ -28,6 +28,7 @@ dev = [
     "pytest-cov>=6.0",
     "httpx>=0.28",
     "ruff>=0.8",
+    "boto3>=1.35",
     "mypy>=1.13",
 ]
 
@@ -86,7 +87,7 @@ warn_unreachable = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["mangum.*"]
+module = ["mangum.*", "boto3.*", "botocore.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------- pytest
