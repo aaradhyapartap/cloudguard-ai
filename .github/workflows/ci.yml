@@ -41,12 +41,60 @@ jobs:
         run: cd backend && mypy app
       - name: Migrate
         run: cd backend && alembic upgrade head
-        env: { DB_HOST: localhost }
+        env:
+          DB_HOST: localhost
+
+      # Seed the same organizations/users used by local development and
+      # authenticated integration tests.
+      - name: Seed database
+        run: python scripts/seed_data.py
+        env:
+          DB_HOST: localhost
+
+      # The POSTGRES_USER created by the service container is a privileged
+      # database role. RLS must be tested through an ordinary application role,
+      # otherwise PostgreSQL can bypass row-level policies.
+      - name: Create application database role
+        env:
+          PGPASSWORD: cloudguard
+        run: |
+          psql -h localhost -U cloudguard -d cloudguard <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_roles WHERE rolname = 'cloudguard_app'
+            ) THEN
+              CREATE ROLE cloudguard_app
+                LOGIN
+                PASSWORD 'cloudguard_app'
+                NOSUPERUSER
+                NOCREATEDB
+                NOCREATEROLE
+                NOINHERIT
+                NOBYPASSRLS;
+            END IF;
+          END
+          $$;
+
+          GRANT CONNECT ON DATABASE cloudguard TO cloudguard_app;
+          GRANT USAGE ON SCHEMA public TO cloudguard_app;
+          GRANT SELECT, INSERT, UPDATE, DELETE
+            ON ALL TABLES IN SCHEMA public
+            TO cloudguard_app;
+          GRANT USAGE, SELECT
+            ON ALL SEQUENCES IN SCHEMA public
+            TO cloudguard_app;
+          SQL
+
       # Isolation tests run against real PostgreSQL because Row-Level Security
-      # does not exist in SQLite. Faking this would test nothing.
+      # does not exist in SQLite. They deliberately use the non-superuser role.
       - name: Test
         run: cd backend && pytest --cov=app --cov-report=term-missing
-        env: { DB_HOST: localhost, RUN_DB_TESTS: '1' }
+        env:
+          DB_HOST: localhost
+          DB_USER: cloudguard_app
+          DB_PASSWORD: cloudguard_app
+          RUN_DB_TESTS: '1'
 
   frontend:
     name: Frontend
