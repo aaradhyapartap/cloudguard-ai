@@ -7,13 +7,14 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import NotFoundError
+from app.core.errors import ConflictError, NotFoundError
 from app.models.ai import DomainEvent
 from app.models.documents import (
     DocumentCreateRequest,
     DocumentResponse,
     DocumentUploadResponse,
 )
+from app.models.enums import ProcessingStatus
 from app.models.principal import Principal
 from app.ports.document_store import DocumentStore
 from app.ports.event_publisher import EventPublisher
@@ -93,6 +94,42 @@ class DocumentService:
             upload_url=upload_url,
             expires_in_seconds=UPLOAD_URL_TTL_SECONDS,
         )
+
+    async def complete_upload(self, document_id: UUID) -> DocumentResponse:
+        document = await self._documents.get(document_id)
+        if document is None:
+            raise NotFoundError()
+
+        if document.processing_status is not ProcessingStatus.QUEUED:
+            raise ConflictError(
+                "The document upload has already been completed or processing has started."
+            )
+
+        metadata = await self._document_store.head_object(key=document.storage_key)
+        if metadata is None:
+            raise NotFoundError("The uploaded document object does not exist.")
+
+        document.processing_status = ProcessingStatus.EXTRACTING
+        document.processing_error = None
+
+        await self._events.publish(
+            DomainEvent(
+                event_type="DocumentUploadCompleted",
+                organization_id=str(self._principal.organization_id),
+                payload={
+                    "document_id": str(document.id),
+                    "storage_key": document.storage_key,
+                    "size_bytes": metadata.get("size_bytes", document.size_bytes),
+                    "content_type": metadata.get(
+                        "content_type",
+                        document.content_type,
+                    ),
+                },
+                occurred_at=datetime.now(UTC),
+            )
+        )
+
+        return self._to_response(document)
 
     async def get(self, document_id: UUID) -> DocumentResponse:
         document = await self._documents.get(document_id)

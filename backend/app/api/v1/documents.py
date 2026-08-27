@@ -54,6 +54,26 @@ async def register_document(
     return await service.register_upload(payload)
 
 
+@router.post(
+    "/{document_id}/complete",
+    response_model=DocumentResponse,
+    summary="Complete a document upload",
+    dependencies=[requires(Permission.DOCUMENT_UPLOAD)],
+)
+async def complete_document_upload(
+    document_id: UUID,
+    session: SessionDep,
+    principal: PrincipalDep,
+    container: ContainerDep,
+) -> DocumentResponse:
+    service = _service(
+        session=session,
+        principal=principal,
+        container=container,
+    )
+    return await service.complete_upload(document_id)
+
+
 @router.get(
     "",
     response_model=Page[DocumentResponse],

@@ -34,6 +34,14 @@ class DocumentStore(ABC):
         """Write an object."""
 
     @abstractmethod
+    async def head_object(self, *, key: str) -> dict[str, object] | None:
+        """Return object metadata without downloading the object."""
+
+    @abstractmethod
+    async def delete_object(self, *, key: str) -> None:
+        """Delete an object if it exists."""
+
+    @abstractmethod
     def build_key(self, *, organization_id: UUID, document_id: UUID, filename: str) -> str:
         """Object key layout.
 

@@ -10,7 +10,7 @@ user creation) before any route runs. Run with::
 The centrepiece is :func:`test_route_protection_matrix`. It walks **every**
 protected route against **every** role and asserts the exact expected status.
 Adding a route without adding it to ``ROUTE_MATRIX`` fails
-``test_matrix_covers_every_protected_route`` — so the coverage cannot silently
+``test_matrix_covers_every_protected_route`` â€” so the coverage cannot silently
 rot as the API grows, which is how authorization holes normally appear.
 """
 
@@ -55,6 +55,11 @@ ROUTE_MATRIX: dict[tuple[str, str], dict[Role, int]] = {
     ("POST", "/api/v1/documents"): {
         Role.ANALYST: 201,
         Role.MANAGER: 201,
+        Role.ADMIN: 403,
+    },
+    ("POST", "/api/v1/documents/{document_id}/complete"): {
+        Role.ANALYST: 404,
+        Role.MANAGER: 404,
         Role.ADMIN: 403,
     },
     ("GET", "/api/v1/documents"): {
@@ -275,7 +280,7 @@ def test_login_reconciles_role_from_the_token(
 
     An administrator moving someone between Cognito groups takes effect on their
     next login. A stale local role would mean a revoked privilege silently
-    persisting — the finding this product exists to catch.
+    persisting â€” the finding this product exists to catch.
     """
     promoted = analyst.model_copy(update={"role": Role.MANAGER})
 
