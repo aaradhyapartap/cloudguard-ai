@@ -36,6 +36,8 @@ USER_A = uuid4()
 USER_B = uuid4()
 DOC_A = uuid4()
 DOC_B = uuid4()
+CHUNK_A = uuid4()
+CHUNK_B = uuid4()
 
 
 def _skip_without_database() -> None:
@@ -68,9 +70,23 @@ async def seed_two_tenants() -> object:
 
     # Everything else goes in inside its own tenant context. Note that the test
     # setup itself cannot cheat past the policy — that is the point.
-    for org_id, user_id, email, doc_id, name in (
-        (ORG_A, USER_A, "a@acme.test", DOC_A, "acme-vendor-policy.pdf"),
-        (ORG_B, USER_B, "b@globex.test", DOC_B, "globex-vendor-policy.pdf"),
+    for org_id, user_id, email, doc_id, chunk_id, name in (
+        (
+            ORG_A,
+            USER_A,
+            "a@acme.test",
+            DOC_A,
+            CHUNK_A,
+            "acme-vendor-policy.pdf",
+        ),
+        (
+            ORG_B,
+            USER_B,
+            "b@globex.test",
+            DOC_B,
+            CHUNK_B,
+            "globex-vendor-policy.pdf",
+        ),
     ):
         async with tenant_session(org_id) as session:
             await session.execute(
@@ -99,6 +115,20 @@ async def seed_two_tenants() -> object:
                     "name": name,
                     "key": f"org/{org_id}/documents/{doc_id}/{name}",
                     "uploader": user_id,
+                },
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO document_chunks "
+                    "(id, organization_id, document_id, chunk_index, content, token_count) "
+                    "VALUES (:id, :org, :document, 0, :content, 3) "
+                    "ON CONFLICT DO NOTHING"
+                ),
+                {
+                    "id": chunk_id,
+                    "org": org_id,
+                    "document": doc_id,
+                    "content": f"{name} extracted text",
                 },
             )
 
@@ -166,6 +196,47 @@ async def test_a_session_without_a_tenant_sees_nothing() -> None:
         rows = (await session.execute(text("SELECT id FROM documents"))).scalars().all()
     assert rows == []
 
+
+async def test_tenant_sees_only_its_own_document_chunks() -> None:
+    async with tenant_session(ORG_A) as session:
+        rows = (
+            await session.execute(text("SELECT id FROM document_chunks"))
+        ).scalars().all()
+    assert {str(row) for row in rows} == {str(CHUNK_A)}
+
+
+async def test_targeting_another_tenants_chunk_by_id_returns_nothing() -> None:
+    async with tenant_session(ORG_A) as session:
+        result = await session.execute(
+            text("SELECT id FROM document_chunks WHERE id = :id"),
+            {"id": CHUNK_B},
+        )
+    assert result.scalar_one_or_none() is None
+
+
+async def test_insert_chunk_into_another_tenant_is_rejected() -> None:
+    with pytest.raises(Exception, match="policy"):
+        async with tenant_session(ORG_A) as session:
+            await session.execute(
+                text(
+                    "INSERT INTO document_chunks "
+                    "(id, organization_id, document_id, chunk_index, content, token_count) "
+                    "VALUES (:id, :org, :document, 99, 'smuggled chunk', 2)"
+                ),
+                {
+                    "id": uuid4(),
+                    "org": ORG_B,
+                    "document": DOC_B,
+                },
+            )
+
+
+async def test_untenanted_session_sees_no_document_chunks() -> None:
+    async with untenanted_session() as session:
+        rows = (
+            await session.execute(text("SELECT id FROM document_chunks"))
+        ).scalars().all()
+    assert rows == []
 
 async def test_seeding_cannot_write_into_the_wrong_tenant() -> None:
     """The WITH CHECK clause constrains writes, including from trusted code."""
