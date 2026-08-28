@@ -18,3 +18,8 @@ class DocumentChunkRepository(TenantRepository[DocumentChunk]):
             .order_by(DocumentChunk.chunk_index.asc())
         )
         return list(result.scalars().all())
+
+    async def add_many(self, chunks: list[DocumentChunk]) -> list[DocumentChunk]:
+        self._session.add_all(chunks)
+        await self._session.flush()
+        return chunks
