@@ -62,6 +62,8 @@ class AWSSettings(BaseSettings):
     documents_bucket: str = "cloudguard-documents-local"
     event_bus_name: str = "cloudguard-events"
     audit_table_name: str = "cloudguard-audit-events"
+    aurora_cluster_arn: str | None = None
+    aurora_secret_arn: str | None = None
     # Set for LocalStack; leave empty to use real AWS endpoints.
     endpoint_url: str | None = None
 
