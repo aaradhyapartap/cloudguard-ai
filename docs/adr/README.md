@@ -16,7 +16,7 @@ half most people cannot produce.
 | 0005 | Deterministic risk scoring in Python | accepted | 0 |
 | 0006 | Fixed agent graph, no emergent delegation | accepted | 0 |
 | 0007 | Hybrid retrieval from the MVP | accepted | 0 |
-| 0008 | Lambda outside VPC via Aurora Data API | accepted | 0 |
+| [0008](0008-lambda-outside-vpc-via-aurora-data-api.md) | Lambda outside VPC via Aurora Data API | accepted | 3 |
 | 0009 | CDK (Python) over Terraform | accepted | 0 |
 | 0010 | Citation verification in application code | accepted | 0 |
 | 0011 | Cassette-based LLM provider for tests | accepted | 0 |
