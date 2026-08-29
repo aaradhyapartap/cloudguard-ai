@@ -45,7 +45,7 @@ typecheck:  ## Type-check both sides
 check: lint typecheck test  ## Everything CI runs
 
 synth:  ## Render CloudFormation templates without touching AWS
-	cd infrastructure && cdk synth
+	cd infrastructure && cdk synth -c offline_synth=true
 
 deploy-identity:  ## Create the Cognito user pool (needs AWS credentials)
 	cd infrastructure && cdk deploy CloudGuardIdentity-dev

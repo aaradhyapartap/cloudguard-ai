@@ -26,7 +26,7 @@ from app.adapters.mock.document_store import InMemoryDocumentStore
 from app.adapters.mock.event_publisher import InMemoryEventPublisher
 from app.adapters.mock.llm import MockLLMProvider
 from app.adapters.mock.vector_store import InMemoryVectorStore
-from app.core.config import Settings, get_settings
+from app.core.config import Settings, WorkerSettings, get_settings, get_worker_settings
 from app.core.logging import get_logger
 from app.ports.document_store import DocumentStore
 from app.ports.event_publisher import EventPublisher
@@ -76,6 +76,8 @@ def _build_identity(settings: Settings) -> IdentityProvider:
                 client_id=settings.cognito.client_id,
                 region=settings.cognito.region,
             )
+        case _:
+            raise ValueError(f"Unknown identity provider: {settings.identity_provider}")
 
 
 def _build_llm(settings: Settings) -> LLMProvider:
@@ -98,7 +100,7 @@ def _build_vector_store(settings: Settings) -> VectorStore:
             raise AdapterNotAvailableError("VectorStore", "s3_vectors", "Phase 11")
 
 
-def _build_document_store(settings: Settings) -> DocumentStore:
+def _build_document_store(settings: Settings | WorkerSettings) -> DocumentStore:
     match settings.document_store:
         case "memory":
             return InMemoryDocumentStore()
@@ -111,7 +113,8 @@ def _build_document_store(settings: Settings) -> DocumentStore:
                 endpoint_url=settings.aws.endpoint_url,
             )
 
-def _build_event_publisher(settings: Settings) -> EventPublisher:
+
+def _build_event_publisher(settings: Settings | WorkerSettings) -> EventPublisher:
     match settings.event_publisher:
         case "memory":
             return InMemoryEventPublisher()
@@ -123,6 +126,7 @@ def _build_event_publisher(settings: Settings) -> EventPublisher:
                 region=settings.aws.region,
                 endpoint_url=settings.aws.endpoint_url,
             )
+
 
 def build_container(settings: Settings | None = None) -> Container:
     resolved = settings or get_settings()
@@ -140,6 +144,33 @@ def build_container(settings: Settings | None = None) -> Container:
         identity_provider=resolved.identity_provider,
         llm_provider=resolved.llm_provider,
         vector_store=resolved.vector_store,
+        document_store=resolved.document_store,
+        event_publisher=resolved.event_publisher,
+    )
+    return container
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerContainer:
+    """Every dependency the worker layer is allowed to reach for."""
+
+    settings: Settings | WorkerSettings
+    documents: DocumentStore
+    events: EventPublisher
+
+
+def build_worker_container(
+    settings: Settings | WorkerSettings | None = None,
+) -> WorkerContainer:
+    resolved = settings or get_worker_settings()
+    container = WorkerContainer(
+        settings=resolved,
+        documents=_build_document_store(resolved),
+        events=_build_event_publisher(resolved),
+    )
+    logger.info(
+        "worker_container_built",
+        environment=resolved.environment.value,
         document_store=resolved.document_store,
         event_publisher=resolved.event_publisher,
     )

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from app.core.config import Environment, Settings
+from app.core.config import Environment, Settings, WorkerSettings
 from pydantic import ValidationError
 
 
@@ -13,6 +13,20 @@ def test_defaults_are_safe_for_local_development() -> None:
     assert settings.llm_provider == "mock"
     assert settings.identity_provider == "local"
     assert settings.docs_enabled is True
+
+
+def test_worker_settings_safe_without_identity() -> None:
+    """Worker settings do not require Cognito or identity provider."""
+    worker = WorkerSettings(environment=Environment.DEV)
+    assert worker.environment is Environment.DEV
+    assert worker.document_store == "memory"
+    assert worker.event_publisher == "memory"
+
+
+def test_dev_api_requires_cognito_or_fails() -> None:
+    """API Settings in dev environment default to local auth and fail without Cognito."""
+    with pytest.raises(ValidationError, match="permitted only when environment='local'"):
+        Settings(environment=Environment.DEV)
 
 
 def test_production_rejects_a_test_double_llm() -> None:

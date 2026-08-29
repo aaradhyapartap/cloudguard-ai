@@ -236,7 +236,37 @@ class Settings(BaseSettings):
         return self.environment is not Environment.PROD
 
 
+class WorkerSettings(BaseSettings):
+    """Scoped configuration for background and deployed document-processing workers.
+
+    Workers only need document storage, event publishing, Data API persistence, and
+    logging configuration. They do not run the HTTP API, do not sign or verify JWTs,
+    and must not require Cognito settings.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=(".env", "../.env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    environment: Environment = Environment.LOCAL
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    log_format: Literal["json", "console"] = "console"
+    document_store: Literal["memory", "s3"] = "memory"
+    event_publisher: Literal["memory", "eventbridge"] = "memory"
+
+    database: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    aws: AWSSettings = Field(default_factory=AWSSettings)
+
+
 @lru_cache
 def get_settings() -> Settings:
     """Cached so the process parses and validates the environment exactly once."""
     return Settings()
+
+
+@lru_cache
+def get_worker_settings() -> WorkerSettings:
+    """Cached configuration for worker tasks."""
+    return WorkerSettings()

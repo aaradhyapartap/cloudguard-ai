@@ -139,12 +139,13 @@ class IdentityStack(cdk.Stack):
             enable_token_revocation=True,
         )
 
+        account_suffix = "".join(c for c in self.account if c.isalnum())[-6:] or "123456"
         self.domain = self.user_pool.add_domain(
             "HostedUiDomain",
             cognito_domain=cognito.CognitoDomainOptions(
                 # Must be globally unique across all AWS accounts. The account
                 # id keeps it unique without leaking anything useful.
-                domain_prefix=f"cloudguard-{environment_name}-{self.account[-6:]}"
+                domain_prefix=f"cloudguard-{environment_name}-{account_suffix}".lower()
             ),
         )
 

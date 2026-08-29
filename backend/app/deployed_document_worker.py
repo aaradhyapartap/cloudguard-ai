@@ -27,17 +27,17 @@ import asyncio
 from typing import Any
 from uuid import UUID
 
-from app.core.config import get_settings
-from app.core.container import build_container
+from app.core.config import get_worker_settings
+from app.core.container import build_worker_container
 from app.core.logging import configure_logging, get_logger
 from app.models.tenant import TenantScope
 from app.services.document_processing import DocumentProcessingService
 
 logger = get_logger(__name__)
 
-_settings = get_settings()
+_settings = get_worker_settings()
 configure_logging(_settings)
-_container = build_container(_settings)
+_container = build_worker_container(_settings)
 
 
 def _build_repository() -> Any:
