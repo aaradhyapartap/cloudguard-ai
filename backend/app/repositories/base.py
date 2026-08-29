@@ -1,9 +1,10 @@
 """Repository base.
 
-Every repository is constructed with a :class:`Principal` and a session that is
-already tenant-scoped. There is no constructor that omits the principal, so
-there is no way to write a repository method that accidentally queries across
-tenants — the type signature refuses.
+Every repository is constructed with an authenticated :class:`Principal` or an
+internal :class:`TenantScope`, plus a session that is already tenant-scoped.
+There is no constructor that omits tenant identity, so there is no way to write
+a repository method that accidentally queries across tenants — the type
+signature refuses.
 
 This is the application-level half of the isolation story. The database half is
 the RLS policy in migration 0001. Both are present because either alone is one
@@ -18,6 +19,7 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.principal import Principal
+from app.models.tenant import TenantScope
 from app.repositories.database import Base
 
 
@@ -26,13 +28,17 @@ class TenantRepository[ModelT: Base]:
 
     model: type[ModelT]
 
-    def __init__(self, session: AsyncSession, principal: Principal) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        scope: Principal | TenantScope,
+    ) -> None:
         self._session = session
-        self._principal = principal
+        self._scope = scope
 
     @property
     def organization_id(self) -> UUID:
-        return self._principal.organization_id
+        return self._scope.organization_id
 
     def _scoped(self) -> Select[tuple[ModelT]]:
         """A SELECT already filtered to this tenant.

@@ -1,4 +1,4 @@
-"""Focused tests for Phase 3 document processing."""
+﻿"""Focused tests for Phase 3 document processing."""
 
 from __future__ import annotations
 
@@ -14,11 +14,10 @@ from app.models.enums import (
     ConfidentialityLevel,
     DocumentType,
     ProcessingStatus,
-    Role,
 )
-from app.models.principal import Principal
+from app.models.tenant import TenantScope
 from app.repositories.tables import Document
-from app.services.documents import DocumentService
+from app.services.document_processing import DocumentProcessingService
 
 ORG_ID = UUID("11111111-1111-4111-8111-111111111111")
 USER_ID = UUID("33333333-3333-4333-8333-333333333333")
@@ -44,14 +43,8 @@ class FakeChunkRepository:
         return chunks
 
 
-def make_principal() -> Principal:
-    return Principal(
-        user_id=USER_ID,
-        organization_id=ORG_ID,
-        role=Role.ANALYST,
-        email="analyst@acme.test",
-        department="Finance",
-    )
+def make_scope() -> TenantScope:
+    return TenantScope(organization_id=ORG_ID)
 
 
 def make_document(
@@ -84,7 +77,7 @@ def make_document(
 def make_service(
     document: Document,
 ) -> tuple[
-    DocumentService,
+    DocumentProcessingService,
     InMemoryDocumentStore,
     InMemoryEventPublisher,
     FakeChunkRepository,
@@ -93,9 +86,9 @@ def make_service(
     events = InMemoryEventPublisher()
     chunks = FakeChunkRepository()
 
-    service = DocumentService(
+    service = DocumentProcessingService(
         session=Any,  # type: ignore[arg-type]
-        principal=make_principal(),
+        scope=make_scope(),
         document_store=store,
         event_publisher=events,
     )
@@ -116,9 +109,9 @@ async def test_process_text_document_creates_ordered_chunks() -> None:
         content_type="text/plain",
     )
 
-    response = await service.process_document(DOCUMENT_ID)
+    await service.process_document(DOCUMENT_ID)
 
-    assert response.processing_status is ProcessingStatus.READY
+    assert document.processing_status is ProcessingStatus.READY
     assert [chunk.chunk_index for chunk in chunks.chunks] == [0, 1, 2]
     assert [len(chunk.content) for chunk in chunks.chunks] == [1000, 1000, 100]
     assert [event.event_type for event in events.events] == ["DocumentIndexed"]
@@ -136,10 +129,10 @@ async def test_process_document_quarantines_unsupported_content_type() -> None:
     document = make_document(content_type="application/pdf")
     service, _, events, chunks = make_service(document)
 
-    response = await service.process_document(DOCUMENT_ID)
+    await service.process_document(DOCUMENT_ID)
 
-    assert response.processing_status is ProcessingStatus.QUARANTINED
-    assert "Unsupported content type" in (response.processing_error or "")
+    assert document.processing_status is ProcessingStatus.QUARANTINED
+    assert "Unsupported content type" in (document.processing_error or "")
     assert chunks.chunks == []
     assert [event.event_type for event in events.events] == ["DocumentQuarantined"]
 
