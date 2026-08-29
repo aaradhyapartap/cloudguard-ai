@@ -49,3 +49,23 @@ class DocumentUploadResponse(DomainModel):
     document: DocumentResponse
     upload_url: str
     expires_in_seconds: int
+
+
+class ProcessingDocument(DomainModel):
+    """Document fields required by the ingestion worker."""
+
+    id: UUID
+    organization_id: UUID
+    filename: str
+    storage_key: str
+    content_type: str
+    processing_status: ProcessingStatus
+
+
+class ProcessingChunk(DomainModel):
+    """Chunk payload produced before persistence."""
+
+    chunk_index: int
+    content: str
+    token_count: int
+    metadata: dict[str, object]

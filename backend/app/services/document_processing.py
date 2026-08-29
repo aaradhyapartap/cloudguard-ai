@@ -1,22 +1,18 @@
-﻿"""Internal document extraction and chunking service."""
+"""Internal document extraction and chunking service."""
 
 from __future__ import annotations
 
-from builtins import list as list_type
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core.errors import ConflictError, NotFoundError
 from app.models.ai import DomainEvent
+from app.models.documents import ProcessingChunk, ProcessingDocument
 from app.models.enums import ProcessingStatus
 from app.models.tenant import TenantScope
+from app.ports.document_processing_repository import DocumentProcessingRepository
 from app.ports.document_store import DocumentStore
 from app.ports.event_publisher import EventPublisher
-from app.repositories.document_chunks import DocumentChunkRepository
-from app.repositories.documents import DocumentRepository
-from app.repositories.tables import Document, DocumentChunk
 
 TEXT_CHUNK_SIZE = 1000
 
@@ -27,19 +23,23 @@ class DocumentProcessingService:
     def __init__(
         self,
         *,
-        session: AsyncSession,
         scope: TenantScope,
+        repository: DocumentProcessingRepository,
         document_store: DocumentStore,
         event_publisher: EventPublisher,
     ) -> None:
         self._scope = scope
-        self._documents = DocumentRepository(session, scope)
-        self._chunks = DocumentChunkRepository(session, scope)
+        self._repository = repository
         self._document_store = document_store
         self._events = event_publisher
 
     async def process_document(self, document_id: UUID) -> None:
-        document = await self._documents.get(document_id)
+        organization_id = self._scope.organization_id
+
+        document = await self._repository.get_document(
+            organization_id=organization_id,
+            document_id=document_id,
+        )
         if document is None:
             raise NotFoundError()
 
@@ -47,13 +47,19 @@ class DocumentProcessingService:
             raise ConflictError("The document is not ready for extraction.")
 
         if document.content_type != "text/plain":
-            document.processing_status = ProcessingStatus.QUARANTINED
-            document.processing_error = f"Unsupported content type: {document.content_type}"
+            error = f"Unsupported content type: {document.content_type}"
+
+            await self._repository.set_status(
+                organization_id=organization_id,
+                document_id=document.id,
+                status=ProcessingStatus.QUARANTINED,
+                error=error,
+            )
 
             await self._events.publish(
                 DomainEvent(
                     event_type="DocumentQuarantined",
-                    organization_id=str(self._scope.organization_id),
+                    organization_id=str(organization_id),
                     payload={
                         "document_id": str(document.id),
                         "content_type": document.content_type,
@@ -67,21 +73,35 @@ class DocumentProcessingService:
             body = await self._document_store.get_object(key=document.storage_key)
             text = body.decode("utf-8")
 
-            document.processing_status = ProcessingStatus.INDEXING
+            await self._repository.set_status(
+                organization_id=organization_id,
+                document_id=document.id,
+                status=ProcessingStatus.INDEXING,
+                error=None,
+            )
 
             chunks = self._build_text_chunks(
                 document=document,
                 text=text,
             )
-            await self._chunks.add_many(chunks)
 
-            document.processing_status = ProcessingStatus.READY
-            document.processing_error = None
+            await self._repository.add_chunks(
+                organization_id=organization_id,
+                document_id=document.id,
+                chunks=chunks,
+            )
+
+            await self._repository.set_status(
+                organization_id=organization_id,
+                document_id=document.id,
+                status=ProcessingStatus.READY,
+                error=None,
+            )
 
             await self._events.publish(
                 DomainEvent(
                     event_type="DocumentIndexed",
-                    organization_id=str(self._scope.organization_id),
+                    organization_id=str(organization_id),
                     payload={
                         "document_id": str(document.id),
                         "chunk_count": len(chunks),
@@ -91,29 +111,35 @@ class DocumentProcessingService:
             )
 
         except UnicodeDecodeError as exc:
-            document.processing_status = ProcessingStatus.FAILED
-            document.processing_error = "The document is not valid UTF-8 text."
+            error = "The document is not valid UTF-8 text."
+
+            await self._repository.set_status(
+                organization_id=organization_id,
+                document_id=document.id,
+                status=ProcessingStatus.FAILED,
+                error=error,
+            )
 
             await self._events.publish(
                 DomainEvent(
                     event_type="DocumentProcessingFailed",
-                    organization_id=str(self._scope.organization_id),
+                    organization_id=str(organization_id),
                     payload={
                         "document_id": str(document.id),
-                        "reason": document.processing_error,
+                        "reason": error,
                     },
                     occurred_at=datetime.now(UTC),
                 )
             )
 
-            raise ConflictError(document.processing_error) from exc
+            raise ConflictError(error) from exc
 
     def _build_text_chunks(
         self,
         *,
-        document: Document,
+        document: ProcessingDocument,
         text: str,
-    ) -> list_type[DocumentChunk]:
+    ) -> list[ProcessingChunk]:
         normalized = text.strip()
         if not normalized:
             return []
@@ -124,13 +150,11 @@ class DocumentProcessingService:
         ]
 
         return [
-            DocumentChunk(
-                organization_id=self._scope.organization_id,
-                document_id=document.id,
+            ProcessingChunk(
                 chunk_index=index,
                 content=content,
                 token_count=max(1, len(content.split())),
-                chunk_metadata={
+                metadata={
                     "content_type": document.content_type,
                     "filename": document.filename,
                 },

@@ -1,46 +1,69 @@
-﻿"""Focused tests for Phase 3 document processing."""
+"""Focused tests for Phase 3 document processing."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import Any
 from uuid import UUID
 
 import pytest
 from app.adapters.mock.document_store import InMemoryDocumentStore
 from app.adapters.mock.event_publisher import InMemoryEventPublisher
 from app.core.errors import ConflictError
-from app.models.enums import (
-    ConfidentialityLevel,
-    DocumentType,
-    ProcessingStatus,
-)
+from app.models.documents import ProcessingChunk, ProcessingDocument
+from app.models.enums import ProcessingStatus
 from app.models.tenant import TenantScope
-from app.repositories.tables import Document
+from app.ports.document_processing_repository import DocumentProcessingRepository
 from app.services.document_processing import DocumentProcessingService
 
 ORG_ID = UUID("11111111-1111-4111-8111-111111111111")
-USER_ID = UUID("33333333-3333-4333-8333-333333333333")
 DOCUMENT_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 
 
-class FakeDocumentRepository:
-    def __init__(self, document: Document) -> None:
+class FakeDocumentProcessingRepository(DocumentProcessingRepository):
+    def __init__(self, document: ProcessingDocument) -> None:
         self.document = document
+        self.processing_error: str | None = None
+        self.chunks: list[ProcessingChunk] = []
 
-    async def get(self, document_id: UUID) -> Document | None:
-        if self.document.id != document_id:
+    async def get_document(
+        self,
+        *,
+        organization_id: UUID,
+        document_id: UUID,
+    ) -> ProcessingDocument | None:
+        if organization_id != self.document.organization_id:
+            return None
+        if document_id != self.document.id:
             return None
         return self.document
 
+    async def set_status(
+        self,
+        *,
+        organization_id: UUID,
+        document_id: UUID,
+        status: ProcessingStatus,
+        error: str | None,
+    ) -> None:
+        if organization_id != self.document.organization_id:
+            return
+        if document_id != self.document.id:
+            return
 
-class FakeChunkRepository:
-    def __init__(self) -> None:
-        self.chunks: list[Any] = []
+        self.document = self.document.model_copy(update={"processing_status": status})
+        self.processing_error = error
 
-    async def add_many(self, chunks: list[Any]) -> list[Any]:
+    async def add_chunks(
+        self,
+        *,
+        organization_id: UUID,
+        document_id: UUID,
+        chunks: list[ProcessingChunk],
+    ) -> None:
+        if organization_id != self.document.organization_id:
+            return
+        if document_id != self.document.id:
+            return
         self.chunks.extend(chunks)
-        return chunks
 
 
 def make_scope() -> TenantScope:
@@ -51,56 +74,42 @@ def make_document(
     *,
     content_type: str = "text/plain",
     status: ProcessingStatus = ProcessingStatus.EXTRACTING,
-) -> Document:
-    now = datetime.now(UTC)
-
-    return Document(
+) -> ProcessingDocument:
+    return ProcessingDocument(
         id=DOCUMENT_ID,
         organization_id=ORG_ID,
         filename="policy.txt",
         storage_key=f"org/{ORG_ID}/documents/{DOCUMENT_ID}/policy.txt",
         content_type=content_type,
-        size_bytes=12,
-        document_type=DocumentType.POLICY,
-        confidentiality_level=ConfidentialityLevel.INTERNAL,
         processing_status=status,
-        processing_error=None,
-        uploader_id=USER_ID,
-        department="Finance",
-        source="unit-test",
-        tags=["phase3"],
-        created_at=now,
-        updated_at=now,
     )
 
 
 def make_service(
-    document: Document,
+    document: ProcessingDocument,
 ) -> tuple[
     DocumentProcessingService,
     InMemoryDocumentStore,
     InMemoryEventPublisher,
-    FakeChunkRepository,
+    FakeDocumentProcessingRepository,
 ]:
     store = InMemoryDocumentStore()
     events = InMemoryEventPublisher()
-    chunks = FakeChunkRepository()
+    repository = FakeDocumentProcessingRepository(document)
 
     service = DocumentProcessingService(
-        session=Any,  # type: ignore[arg-type]
         scope=make_scope(),
+        repository=repository,
         document_store=store,
         event_publisher=events,
     )
-    service._documents = FakeDocumentRepository(document)  # type: ignore[assignment]
-    service._chunks = chunks  # type: ignore[assignment]
 
-    return service, store, events, chunks
+    return service, store, events, repository
 
 
 async def test_process_text_document_creates_ordered_chunks() -> None:
     document = make_document()
-    service, store, events, chunks = make_service(document)
+    service, store, events, repository = make_service(document)
 
     body = ("A" * 1000 + "B" * 1000 + "C" * 100).encode()
     await store.put_object(
@@ -111,9 +120,9 @@ async def test_process_text_document_creates_ordered_chunks() -> None:
 
     await service.process_document(DOCUMENT_ID)
 
-    assert document.processing_status is ProcessingStatus.READY
-    assert [chunk.chunk_index for chunk in chunks.chunks] == [0, 1, 2]
-    assert [len(chunk.content) for chunk in chunks.chunks] == [1000, 1000, 100]
+    assert repository.document.processing_status is ProcessingStatus.READY
+    assert [chunk.chunk_index for chunk in repository.chunks] == [0, 1, 2]
+    assert [len(chunk.content) for chunk in repository.chunks] == [1000, 1000, 100]
     assert [event.event_type for event in events.events] == ["DocumentIndexed"]
 
 
@@ -127,19 +136,19 @@ async def test_process_document_rejects_wrong_starting_status() -> None:
 
 async def test_process_document_quarantines_unsupported_content_type() -> None:
     document = make_document(content_type="application/pdf")
-    service, _, events, chunks = make_service(document)
+    service, _, events, repository = make_service(document)
 
     await service.process_document(DOCUMENT_ID)
 
-    assert document.processing_status is ProcessingStatus.QUARANTINED
-    assert "Unsupported content type" in (document.processing_error or "")
-    assert chunks.chunks == []
+    assert repository.document.processing_status is ProcessingStatus.QUARANTINED
+    assert "Unsupported content type" in (repository.processing_error or "")
+    assert repository.chunks == []
     assert [event.event_type for event in events.events] == ["DocumentQuarantined"]
 
 
 async def test_process_document_marks_invalid_utf8_as_failed() -> None:
     document = make_document()
-    service, store, events, chunks = make_service(document)
+    service, store, events, repository = make_service(document)
 
     await store.put_object(
         key=document.storage_key,
@@ -150,9 +159,7 @@ async def test_process_document_marks_invalid_utf8_as_failed() -> None:
     with pytest.raises(ConflictError):
         await service.process_document(DOCUMENT_ID)
 
-    assert document.processing_status is ProcessingStatus.FAILED
-    assert document.processing_error == "The document is not valid UTF-8 text."
-    assert chunks.chunks == []
-    assert [event.event_type for event in events.events] == [
-        "DocumentProcessingFailed"
-    ]
+    assert repository.document.processing_status is ProcessingStatus.FAILED
+    assert repository.processing_error == "The document is not valid UTF-8 text."
+    assert repository.chunks == []
+    assert [event.event_type for event in events.events] == ["DocumentProcessingFailed"]

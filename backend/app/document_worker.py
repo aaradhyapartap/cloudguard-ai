@@ -1,4 +1,4 @@
-﻿"""EventBridge worker for document ingestion."""
+"""EventBridge worker for document ingestion."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import asyncio
 from typing import Any
 from uuid import UUID
 
+from app.adapters.local.document_processing_repository import SQLAlchemyDocumentProcessingRepository
 from app.core.config import get_settings
 from app.core.container import build_container
 from app.core.logging import configure_logging, get_logger
@@ -39,9 +40,13 @@ async def _handle(event: dict[str, Any]) -> None:
     scope = TenantScope(organization_id=organization_id)
 
     async with tenant_session(organization_id) as session:
-        service = DocumentProcessingService(
+        repository = SQLAlchemyDocumentProcessingRepository(
             session=session,
             scope=scope,
+        )
+        service = DocumentProcessingService(
+            scope=scope,
+            repository=repository,
             document_store=_container.documents,
             event_publisher=_container.events,
         )
