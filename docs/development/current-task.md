@@ -2,69 +2,314 @@
 
 ## Phase
 
-Phase 5 - Deterministic Compliance & Risk Scoring (Completed)
+Phase 6 - Deterministic Agent Workflows
 
 ## Branch
 
-phase-5-compliance-scoring
+phase-6-agents
 
-## Phase 5 Status
+## Objective
 
-Phase 5 - Deterministic Compliance & Risk Scoring is complete, verified, and audited across all four sub-phases (5.1 - 5.4).
+Implement CloudGuard AI's first bounded multi-agent workflow using fixed, auditable orchestration rather than emergent agent-to-agent delegation.
 
-Completed capabilities include:
+Phase 6 implements:
 
-- **Deterministic Scoring Foundation (Phase 5.1)**:
-  - Pure deterministic mathematical `RiskScoringEngine` (`scoring_version = 'v1.0'`).
-  - Strict status semantics (`UNASSESSED`, `NOT_APPLICABLE`, `DEFICIENT`, `PARTIALLY_SATISFIED`, `SATISFIED`).
-  - Zero-applicable controls evaluated to `overall_score = None`, `risk_classification = RiskClassification.NOT_SCORED`.
-  - Missing/ungrounded evidence penalty (30% deduction).
-  - Standard half-up Decimal rounding to two decimal places (`ROUND_HALF_UP`).
-  - Segregation of duties RBAC: `COMPLIANCE_CREATE` for Analyst & Manager; Admin restricted to read-only `RISK_READ`.
-  - Schema migration `0005_compliance_scoring.py` establishing `compliance_frameworks`, `compliance_controls`, `compliance_assessments`, `control_assessments`, `evidence_references`, and immutable `assessment_score_snapshots` with PostgreSQL RLS and trigger enforcement.
+Research -> Risk -> Reviewer
 
-- **Persistence, Repository & Assessment Services (Phase 5.2)**:
-  - `ComplianceRepository` port and `SQLAlchemyComplianceRepository` adapter.
-  - Single assessment-level `FOR UPDATE` serialization discipline ensuring coherent computation snapshots and sequential revision numbering (`revision_number = MAX + 1`).
-  - Immutable `AssessmentScoreSnapshot` capturing exact admitted `EvidenceReference` IDs alongside canonical scoring inputs and raw scores.
-  - Strict tenant scoping and duplicate evidence prevention.
+with a Principal-bound ToolRegistry and deterministic workflow graph.
 
-- **Bounded LLM Candidate Extraction & Projection (Phase 5.3)**:
-  - `ComplianceCandidateExtractionService` providing bounded, advisory LLM candidate extraction.
-  - Fail-closed structured JSON output parsing and exact quote substring verification against trusted retrieval context.
-  - Deterministic input budgeting (`max_control_context_chars`, max controls, query length, retrieval context ceiling).
-  - Clearance-safe projection (`ComplianceAssessmentProjection`) completely redacting evidence above caller clearance level and exposing `hidden_evidence_present`.
+Human approval, task tokens, approval decisions, and execution of approved actions remain Phase 7 and are explicitly out of scope.
 
-- **Compliance API, Review/Finalization & Immutable Human Overrides (Phase 5.4)**:
-  - Migration `0006_score_overrides.py` with composite foreign keys, append-only immutability trigger (`trg_prevent_score_override_mutation`), and RLS isolation.
-  - Manager-only review operations (`RISK_REVIEW` for assessment finalization to `COMPLETED`; `RISK_MODIFY_SEVERITY` for score overrides).
-  - Mathematical separation of authoritative computed score vs. human reviewed override.
-  - Bounded override score validation ($0.00 \dots 100.00$) with deterministic risk classification mapping via `RiskScoringEngine.classify_score()`.
-  - Completed assessment immutability (rejects control mutation, evidence admission, and score recomputation).
-  - FastAPI compliance router (`/api/v1/compliance`) with 12 tenant-safe, clearance-projected endpoints.
-  - Full route security matrix coverage verifying role permissions across Analyst, Manager, and Admin.
+## Architectural Invariants
 
-Phase 5 final validation:
+### Original human Principal is authoritative
 
-- Ruff: passed (0 errors)
-- mypy: passed (85 source files)
-- backend tests: 557 passed with tenant RLS role `cloudguard_app`
-- infrastructure tests: 21 passed
-- total automated tests: 578 passed
-- full validation script (`validate-all.ps1`): passed
-- git diff --check: passed
+Every agent execution and every tool invocation carries the original authenticated Principal.
+
+Agents do not receive elevated service identities for application authorization.
+
+Tenant identity, role permissions, and confidentiality clearance must never be supplied by model output or request payloads.
+
+Existing application services remain authoritative for their own security boundaries.
+
+### ToolRegistry is the execution gate
+
+The model may propose a tool-call intent, but it never receives credentials or directly invokes infrastructure.
+
+A tool call executes only when both conditions pass:
+
+1. the requested tool exists in the registry and is statically allowed for that agent; and
+2. the original human Principal is authorized for the underlying operation.
+
+Unknown tools, malformed arguments, out-of-scope tools, and unauthorized calls fail closed before tool code executes.
+
+No wildcard tool permissions are allowed.
+
+### Agents have narrow static capabilities
+
+Research Agent:
+
+- may search authorized documents and obtain retrieved evidence;
+- is strictly read-only;
+- cannot mutate compliance, risk, investigation, approval, or document state.
+
+Risk Agent:
+
+- consumes validated evidence/context produced by prior bounded steps;
+- emits structured candidate risk/component estimates only;
+- cannot write authoritative scores;
+- deterministic Python scoring remains authoritative.
+
+Reviewer Agent:
+
+- consumes the bounded workflow result and authoritative retrieved evidence;
+- validates grounding, citation existence, schema integrity, and workflow constraints;
+- has no write tools;
+- may fail the workflow;
+- must use a separately configured reviewer/judge model rather than silently reusing the generator model configuration.
+
+### LLMs remain advisory
+
+No model output directly becomes an authoritative compliance score, risk classification, approval decision, or executed action.
+
+Structured model output is parsed and validated by application code.
+
+Python remains authoritative for deterministic risk scoring.
+
+### Retrieval security is not duplicated
+
+Agent document search delegates to the existing RetrievalService.
+
+RetrievalService remains authoritative for:
+
+- organization scoping from Principal.organization_id;
+- confidentiality filtering from the Principal clearance ceiling;
+- vector search tenant isolation.
+
+The ToolRegistry authorizes whether an agent may request retrieval; it does not replace retrieval security.
+
+### Orchestration is deterministic
+
+The workflow graph is fixed:
+
+Research -> Risk -> Reviewer
+
+Agents cannot dynamically choose another agent, spawn arbitrary agents, or change workflow topology.
+
+Reviewer failure terminates the Phase 6 workflow.
+
+Phase 7 will extend the successful Reviewer path with human approval.
+
+### Provider-neutral model access
+
+Agents depend only on the existing LLMProvider port and provider-neutral GenerationRequest / GenerationResponse models.
+
+No agent service imports Bedrock SDK types.
+
+The composition root is responsible for selecting concrete providers.
+
+Phase 6 may wire distinct generator and reviewer LLMProvider instances so the reviewer model can be configured independently.
+
+### Bounded execution
+
+Every model invocation must have explicit bounds for:
+
+- input/context size;
+- output tokens;
+- number of retrieved evidence items;
+- number of tool calls;
+- tool argument schema;
+- structured output schema.
+
+No unbounded agent loop is permitted.
+
+### Phase 7 boundary
+
+Phase 6 does NOT implement:
+
+- approval queue behavior;
+- waitForTaskToken;
+- Manager approval/rejection/modification callbacks;
+- execution of approved actions;
+- automated remediation.
+
+Those remain Phase 7.
+
+## Phase 6 Implementation Plan
+
+### Phase 6.1 - Agent Contracts and Secure ToolRegistry
+
+Deliver:
+
+- provider-neutral agent/domain models;
+- bounded AgentType identity;
+- typed tool-call request and result contracts;
+- explicit tool definitions with argument schemas;
+- static per-agent allowlists;
+- Principal-bound ToolRegistry;
+- fail-closed unknown-tool behavior;
+- fail-closed malformed argument behavior;
+- authorization before execution;
+- bounded tool-call count;
+- unit tests proving out-of-scope tools never execute.
+
+Initial tool surface should remain intentionally small.
+
+Expected Research capability:
+
+- search_documents
+
+Additional read tools are added only when an implemented service can back them without bypassing existing authorization.
+
+Done when:
+
+- Research can invoke its explicitly allowed read tool;
+- Risk and Reviewer cannot invoke Research-only tools unless explicitly granted;
+- unknown and unauthorized calls are rejected before handler execution;
+- tests prove the original Principal is passed to the underlying service.
+
+### Phase 6.2 - Research Agent
+
+Deliver:
+
+- bounded Research Agent service;
+- retrieval through the ToolRegistry and existing RetrievalService;
+- deterministic evidence/source labels;
+- structured Research result schema;
+- preservation of trusted chunk/document provenance;
+- prompt-injection boundary treating retrieved documents as untrusted data;
+- zero-result behavior that avoids unnecessary model calls where possible;
+- strict context and output ceilings.
+
+Research remains read-only.
+
+Done when:
+
+- Research produces a validated bounded evidence result;
+- every evidence reference maps to actually retrieved authorized evidence;
+- higher-clearance and cross-tenant evidence cannot enter the result;
+- prompt text cannot cause an out-of-scope tool to execute.
+
+### Phase 6.3 - Risk Agent
+
+Deliver:
+
+- bounded Risk Agent service;
+- structured candidate risk/component estimates derived only from trusted upstream evidence;
+- evidence references constrained to trusted upstream Research output;
+- no direct persistence of authoritative score/classification;
+- integration with the deterministic Python scoring boundary where applicable;
+- strict schema and finite numeric validation;
+- fail-closed handling of malformed or invented evidence references.
+
+Done when:
+
+- identical accepted deterministic scoring inputs still produce identical authoritative scores independent of model output wording;
+- Risk Agent can propose estimates but cannot write or override the authoritative deterministic result;
+- invented evidence identifiers are rejected.
+
+### Phase 6.4 - Reviewer Agent
+
+Deliver:
+
+- bounded Reviewer Agent service;
+- separately configured reviewer/judge LLMProvider;
+- grounding validation;
+- citation/evidence existence validation;
+- structured PASS / FAIL review result with bounded reasons;
+- deterministic application checks around model review output;
+- no write-capable tools.
+
+Reviewer failure must fail the workflow.
+
+Done when:
+
+- a grounded valid run can pass;
+- missing/invented citations fail;
+- malformed reviewer output fails closed;
+- Reviewer cannot mutate application state;
+- tests prove the Reviewer provider can be configured independently from the generator provider.
+
+### Phase 6.5 - Deterministic Workflow Orchestration
+
+Deliver:
+
+- fixed Research -> Risk -> Reviewer workflow contract;
+- deterministic workflow state transitions;
+- execution/correlation identifiers;
+- bounded step inputs/outputs;
+- failure propagation;
+- Step Functions definition/infrastructure for the fixed graph;
+- local/test orchestration path that does not require AWS;
+- workflow trace metadata sufficient for later Phase 7 audit/approval use;
+- ENABLE_AGENTIC_WORKFLOWS remains the feature gate.
+
+No human approval state is added in Phase 6.
+
+Done when:
+
+- the fixed graph executes in order;
+- no agent can dynamically select the next agent;
+- Reviewer FAIL terminates the run;
+- the ToolRegistry rejects an out-of-scope call;
+- local deterministic tests and infrastructure tests cover the graph.
+
+## Security Test Requirements
+
+Phase 6 tests must explicitly cover:
+
+- cross-tenant tool requests;
+- confidentiality/clearance enforcement;
+- out-of-allowlist tools;
+- unknown tools;
+- malformed tool arguments;
+- model-supplied organization IDs being ignored/rejected;
+- model-supplied role/clearance escalation attempts;
+- prompt-injection attempts requesting write tools;
+- invented evidence/chunk identifiers;
+- Reviewer write attempts;
+- Reviewer FAIL workflow termination;
+- tool-call budget exhaustion;
+- model output schema failures.
+
+## Existing Components to Reuse
+
+- LLMProvider
+- GenerationRequest
+- GenerationResponse
+- RetrievalService
+- VectorStore
+- Principal
+- centralized RBAC in security/authz.py
+- existing compliance deterministic scoring services
+- existing configuration/composition-root pattern
+- existing AWS Step Functions/CDK infrastructure patterns
+
+Do not duplicate these boundaries in agent-specific code.
 
 ## Validation
 
-Full project validation:
+Focused Phase 6 validation must pass before full validation.
+
+Full validation:
 
 powershell -ExecutionPolicy Bypass -File .\scripts\validate-all.ps1
+
+Additionally:
+
+- Ruff must pass.
+- mypy must pass.
+- git diff --check must pass.
+- existing Phase 1-5 tests must remain green.
+- agent authorization matrix tests must pass.
+- workflow infrastructure tests must pass.
 
 ## Commit Policy
 
 Do not commit or push until:
 
-- focused validation passes
-- full validation passes
-- git diff --check passes
-- architecture review is complete
+- focused validation passes;
+- full validation passes;
+- git diff --check passes;
+- architecture review is complete;
+- Phase 7 approval behavior has not leaked into Phase 6.
