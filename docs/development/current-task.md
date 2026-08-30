@@ -2,109 +2,97 @@
 
 ## Phase
 
-Phase 3 - Document Ingestion
+Phase 4 - Retrieval-Augmented Generation
 
 ## Branch
 
 phase-3-document-ingestion
 
-## Current status
+## Phase 3 status
 
-The following Phase 3 components are already implemented and pushed:
+Phase 3 - Document Ingestion is complete and pushed.
+
+Completed capabilities include:
 
 - document registration
-- presigned upload flow
-- upload completion flow
-- text extraction and deterministic chunking
-- document chunk persistence
-- tenant RLS tests
-- event-driven local processing worker
-- DocumentProcessingRepository port
-- local SQLAlchemy processing adapter
-- Aurora Data API processing adapter
-- deployed Data API document worker
-- normalized Step Functions task contract
-- Phase 3 validation automation
+- presigned S3 upload flow
+- upload completion verification
+- S3 ObjectCreated -> EventBridge -> Step Functions Standard orchestration
+- deployed Data API document-processing Lambda
+- local SQLAlchemy worker path
+- Aurora Data API processing repository
+- atomic QUEUED -> EXTRACTING processing claim
+- concurrent/replayed event protection
+- text/plain extraction
+- application/pdf extraction
+- deterministic chunking
+- tenant-isolated document chunks with PostgreSQL RLS
+- SQS delivery and execution failure handling
+- custom application EventBridge bus
+- full Phase 3 validation automation
+
+Phase 3 final validation:
+
+- Ruff: passed
+- mypy: passed
+- backend tests: 247 passed
+- infrastructure tests: 21 passed
+- git diff --check: passed
+
+Final Phase 3 commit:
+
+84e9376 Complete Phase 3 ingestion concurrency hardening
 
 ## Current next task
 
-Implement the production ingestion orchestration/CDK slice:
+Begin Phase 4 architecture review before implementation.
 
-S3 ObjectCreated
--> EventBridge
--> Step Functions Standard workflow
--> deployed document-processing Lambda
+The first Phase 4 slice should validate the planned retrieval architecture and
+pgvector compatibility with the Aurora Data API before implementing embeddings
+or retrieval.
 
-The deployed processing entrypoint is:
+## Phase 4 architecture questions to resolve first
 
-app.deployed_document_worker.handler
-
-The deployed worker expects:
-
-{
-    "organization_id": "<uuid>",
-    "document_id": "<uuid>"
-}
-
-## Required architecture
-
-- S3 ObjectCreated triggers EventBridge.
-- EventBridge starts Step Functions.
-- Step Functions normalizes upstream event data.
-- Step Functions invokes app.deployed_document_worker.handler.
-- Deployed Lambda uses Aurora Data API.
-- Deployed Lambda does not use tenant_session().
-- Lambda remains outside the database VPC.
-- No NAT Gateway.
-- SQS is used for ingestion failure/DLQ handling.
-- Preserve PostgreSQL RLS.
-- Do not bypass Step Functions.
+- confirm the embedding model and configured vector dimensions
+- inspect existing VectorStore port and adapters
+- validate pgvector operations through the Aurora Data API
+- determine parameter casting required for vector inserts and similarity queries
+- preserve tenant isolation in retrieval
+- define chunk embedding lifecycle and idempotency
+- define retrieval result contract
+- keep AWS SDK calls behind adapters
+- do not put Bedrock SDK calls directly in services
+- do not introduce VPC/NAT unless ADR-0008 is explicitly revisited
 
 ## Before editing
 
 Read:
 
 - AGENTS.md
-- docs/development/phase3-agent-playbook.md
 - docs/architecture/00-phase0-architecture.md
 - docs/adr/0008-lambda-outside-vpc-via-aurora-data-api.md
-- infrastructure/app.py
-- infrastructure/stacks/
-- backend/app/deployed_document_worker.py
-
-## Acceptance criteria for the next slice
-
-- Phase 3 infrastructure stack exists.
-- S3 document bucket exists.
-- S3 ObjectCreated events reach EventBridge.
-- EventBridge starts a Step Functions Standard workflow.
-- Worker input is normalized to organization_id + document_id.
-- Processing task uses app.deployed_document_worker.handler.
-- Processing Lambda is outside the VPC.
-- No NAT Gateway is created.
-- SQS DLQ/failure path exists.
-- IAM permissions are scoped.
-- Infrastructure tests or synth validation pass.
-- Backend validation remains green.
-- git diff --check passes.
+- docs/development/phase3-agent-playbook.md
+- backend/app/ports/vector_store.py
+- backend/app/adapters/
+- backend/app/core/config.py
+- backend/app/core/container.py
+- backend/app/models/
+- backend/migrations/
+- backend/pyproject.toml
 
 ## Stop conditions
 
 Stop and request review if:
 
-- organization_id/document_id cannot be derived safely from the S3 event/key
-- Step Functions JSONPath/string handling becomes fragile
-- a normalization Lambda appears necessary
-- Lambda would need VPC access
-- NAT Gateway appears necessary
-- RLS or Data API semantics would need weakening
-- the implementation would bypass EventBridge or Step Functions
+- pgvector cannot be used safely through Aurora Data API
+- vector dimensionality is unclear
+- the proposed implementation requires Lambda VPC attachment
+- a NAT Gateway appears necessary
+- tenant isolation would need weakening
+- existing repository/service boundaries would need to be bypassed
+- embedding model configuration conflicts with architecture docs
 
 ## Validation
-
-Backend Phase 3 validation:
-
-powershell -ExecutionPolicy Bypass -File .\scripts\validate-phase3.ps1
 
 Full project validation:
 
