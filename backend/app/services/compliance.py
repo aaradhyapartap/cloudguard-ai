@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID
 
 from app.core.errors import (
@@ -14,7 +14,7 @@ from app.core.errors import (
 from app.core.logging import get_logger
 from app.models.compliance import (
     AssessmentScoreResult,
-    AssessmentScoreSnapshotResponse,
+    AssessmentScoreSnapshotProjection,
     AssessmentScoringInput,
     ComplianceAssessmentCreateRequest,
     ComplianceAssessmentProjection,
@@ -25,9 +25,11 @@ from app.models.compliance import (
     ControlScoringInput,
     EvidenceReferenceCreateRequest,
     EvidenceReferenceResponse,
+    ScoreOverrideCreateRequest,
+    ScoreOverrideResponse,
     VisibleEvidenceReference,
 )
-from app.models.enums import AssessmentStatus
+from app.models.enums import AssessmentStatus, RiskClassification
 from app.models.principal import Principal
 from app.ports.compliance_repository import ComplianceRepository
 from app.security.authz import Permission, require_permission
@@ -110,6 +112,60 @@ class ComplianceAssessmentService:
 
         return assessment
 
+    async def _get_active_override_and_effective_scores(
+        self,
+        *,
+        organization_id: UUID,
+        assessment: ComplianceAssessmentResponse,
+    ) -> tuple[ScoreOverrideResponse | None, Decimal | None, RiskClassification]:
+        """Compute active override and effective scores for an assessment.
+
+        An override is ONLY active/effective if:
+        1. The assessment currently has a valid deterministic computation
+           (scoring_version is not None).
+        2. The latest snapshot matches the current materialized assessment computation.
+        3. The latest override references that exact latest snapshot
+           (matching snapshot_id and source_revision_number).
+
+        Otherwise, active override is None and effective scores equal the assessment's
+        current scores.
+        """
+        if assessment.scoring_version is None:
+            return (None, assessment.overall_score, assessment.risk_classification)
+
+        latest_snapshot = await self._repo.get_latest_snapshot(
+            organization_id=organization_id,
+            assessment_id=assessment.id,
+        )
+        if latest_snapshot is None:
+            return (None, assessment.overall_score, assessment.risk_classification)
+
+        if (
+            assessment.scoring_version != latest_snapshot.scoring_version
+            or assessment.overall_score != latest_snapshot.overall_score
+            or assessment.risk_classification != latest_snapshot.risk_classification
+        ):
+            return (None, assessment.overall_score, assessment.risk_classification)
+
+        latest_override = await self._repo.get_latest_score_override(
+            organization_id=organization_id,
+            assessment_id=assessment.id,
+        )
+        if latest_override is None:
+            return (None, assessment.overall_score, assessment.risk_classification)
+
+        if (
+            latest_override.snapshot_id != latest_snapshot.id
+            or latest_override.source_revision_number != latest_snapshot.revision_number
+        ):
+            return (None, assessment.overall_score, assessment.risk_classification)
+
+        return (
+            latest_override,
+            latest_override.override_overall_score,
+            latest_override.override_risk_classification,
+        )
+
     async def get_assessment(
         self,
         *,
@@ -126,7 +182,29 @@ class ComplianceAssessmentService:
         if assessment is None:
             raise NotFoundError("The requested compliance assessment does not exist.")
 
-        return assessment
+        active_override, effective_score, effective_cls = (
+            await self._get_active_override_and_effective_scores(
+                organization_id=principal.organization_id,
+                assessment=assessment,
+            )
+        )
+
+        return ComplianceAssessmentResponse(
+            id=assessment.id,
+            organization_id=assessment.organization_id,
+            framework_id=assessment.framework_id,
+            title=assessment.title,
+            status=assessment.status,
+            overall_score=assessment.overall_score,
+            risk_classification=assessment.risk_classification,
+            scoring_version=assessment.scoring_version,
+            created_by=assessment.created_by,
+            created_at=assessment.created_at,
+            updated_at=assessment.updated_at,
+            effective_overall_score=effective_score,
+            effective_risk_classification=effective_cls,
+            latest_override=active_override,
+        )
 
     async def list_assessments(
         self,
@@ -137,11 +215,38 @@ class ComplianceAssessmentService:
     ) -> list[ComplianceAssessmentResponse]:
         """List compliance assessments for the caller's tenant."""
         require_permission(principal, Permission.RISK_READ)
-        return await self._repo.list_assessments(
+        assessments = await self._repo.list_assessments(
             organization_id=principal.organization_id,
             limit=limit,
             offset=offset,
         )
+        results: list[ComplianceAssessmentResponse] = []
+        for a in assessments:
+            active_override, effective_score, effective_cls = (
+                await self._get_active_override_and_effective_scores(
+                    organization_id=principal.organization_id,
+                    assessment=a,
+                )
+            )
+            results.append(
+                ComplianceAssessmentResponse(
+                    id=a.id,
+                    organization_id=a.organization_id,
+                    framework_id=a.framework_id,
+                    title=a.title,
+                    status=a.status,
+                    overall_score=a.overall_score,
+                    risk_classification=a.risk_classification,
+                    scoring_version=a.scoring_version,
+                    created_by=a.created_by,
+                    created_at=a.created_at,
+                    updated_at=a.updated_at,
+                    effective_overall_score=effective_score,
+                    effective_risk_classification=effective_cls,
+                    latest_override=active_override,
+                )
+            )
+        return results
 
     async def get_control_assessments(
         self,
@@ -323,6 +428,11 @@ class ComplianceAssessmentService:
         if assessment is None:
             raise NotFoundError("The requested compliance assessment does not exist.")
 
+        if assessment.status in (AssessmentStatus.COMPLETED, AssessmentStatus.ARCHIVED):
+            raise ConflictError(
+                "Completed or archived compliance assessments cannot be recomputed."
+            )
+
         # 2. Read framework
         framework = await self._repo.get_framework(assessment.framework_id)
         if framework is None:
@@ -429,17 +539,33 @@ class ComplianceAssessmentService:
         *,
         principal: Principal,
         assessment_id: UUID,
-    ) -> list[AssessmentScoreSnapshotResponse]:
-        """List historical score snapshots for an assessment."""
+    ) -> list[AssessmentScoreSnapshotProjection]:
+        """List clearance-safe historical score snapshots for an assessment."""
         require_permission(principal, Permission.RISK_READ)
 
         # Enforce assessment existence and tenant isolation
         await self.get_assessment(principal=principal, assessment_id=assessment_id)
 
-        return await self._repo.list_snapshots(
+        snapshots = await self._repo.list_snapshots(
             organization_id=principal.organization_id,
             assessment_id=assessment_id,
         )
+        return [
+            AssessmentScoreSnapshotProjection(
+                id=s.id,
+                organization_id=s.organization_id,
+                assessment_id=s.assessment_id,
+                revision_number=s.revision_number,
+                scoring_version=s.scoring_version,
+                framework_version=s.framework_version,
+                raw_scores=s.raw_scores,
+                overall_score=s.overall_score,
+                risk_classification=s.risk_classification,
+                computed_by=s.computed_by,
+                computed_at=s.computed_at,
+            )
+            for s in snapshots
+        ]
 
     async def get_assessment_projection(
         self,
@@ -513,6 +639,13 @@ class ComplianceAssessmentService:
                 )
             )
 
+        active_override, effective_score, effective_cls = (
+            await self._get_active_override_and_effective_scores(
+                organization_id=principal.organization_id,
+                assessment=assessment,
+            )
+        )
+
         return ComplianceAssessmentProjection(
             id=assessment.id,
             organization_id=assessment.organization_id,
@@ -525,8 +658,206 @@ class ComplianceAssessmentService:
             created_by=assessment.created_by,
             created_at=assessment.created_at,
             updated_at=assessment.updated_at,
+            effective_overall_score=effective_score,
+            effective_risk_classification=effective_cls,
+            latest_override=active_override,
             controls=control_projections,
             any_hidden_evidence=any(c.hidden_evidence_present for c in control_projections),
+        )
+
+    async def create_score_override(
+        self,
+        *,
+        principal: Principal,
+        assessment_id: UUID,
+        request: ScoreOverrideCreateRequest,
+    ) -> ScoreOverrideResponse:
+        """Persist an immutable human risk score override for an assessment.
+
+        Requires Permission.RISK_MODIFY_SEVERITY (Manager only).
+        Locks the assessment row FOR UPDATE to ensure consistency with snapshots.
+        """
+        require_permission(principal, Permission.RISK_MODIFY_SEVERITY)
+
+        # 1. Lock parent assessment FOR UPDATE
+        assessment = await self._repo.lock_assessment(
+            organization_id=principal.organization_id,
+            assessment_id=assessment_id,
+        )
+        if assessment is None:
+            raise NotFoundError("The requested compliance assessment does not exist.")
+
+        if assessment.status == AssessmentStatus.ARCHIVED:
+            raise ConflictError("Archived compliance assessments cannot be overridden.")
+
+        # 2. Fetch latest snapshot being overridden
+        latest_snapshot = await self._repo.get_latest_snapshot(
+            organization_id=principal.organization_id,
+            assessment_id=assessment_id,
+        )
+        if latest_snapshot is None:
+            raise ConflictError(
+                "Cannot override score before at least one score computation snapshot exists."
+            )
+
+        # 3. Enforce current computation validity and freshness
+        if (
+            assessment.scoring_version is None
+            or assessment.scoring_version != latest_snapshot.scoring_version
+            or assessment.overall_score != latest_snapshot.overall_score
+            or assessment.risk_classification != latest_snapshot.risk_classification
+        ):
+            raise ConflictError(
+                "Cannot override score when assessment scoring inputs have been modified "
+                "since last computation. Recompute score first."
+            )
+
+        if (
+            latest_snapshot.overall_score is None
+            or latest_snapshot.risk_classification == RiskClassification.NOT_SCORED
+        ):
+            raise ConflictError(
+                "Cannot override score for an assessment with zero applicable controls "
+                "(status is NOT_SCORED)."
+            )
+
+        # 4. Normalize score and deterministically derive risk classification
+        norm_score = request.override_overall_score.quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        derived_classification = RiskScoringEngine.classify_score(norm_score)
+
+        justification = request.justification.strip()
+        if not justification:
+            raise ValidationError("Override justification cannot be empty.")
+
+        # 5. Save immutable score override
+        override = await self._repo.create_score_override(
+            organization_id=principal.organization_id,
+            assessment_id=assessment.id,
+            snapshot_id=latest_snapshot.id,
+            source_revision_number=latest_snapshot.revision_number,
+            original_overall_score=latest_snapshot.overall_score,
+            original_risk_classification=latest_snapshot.risk_classification,
+            override_overall_score=norm_score,
+            override_risk_classification=derived_classification,
+            justification=justification,
+            overridden_by=principal.user_id,
+        )
+
+        logger.info(
+            "compliance_score_overridden",
+            organization_id=str(principal.organization_id),
+            assessment_id=str(assessment_id),
+            snapshot_id=str(latest_snapshot.id),
+            source_revision_number=latest_snapshot.revision_number,
+            override_overall_score=str(norm_score),
+            override_risk_classification=derived_classification.value,
+            overridden_by=str(principal.user_id),
+        )
+
+        return override
+
+    async def finalize_assessment(
+        self,
+        *,
+        principal: Principal,
+        assessment_id: UUID,
+    ) -> ComplianceAssessmentResponse:
+        """Finalize an assessment to COMPLETED status after review.
+
+        Requires Permission.RISK_REVIEW (Manager only).
+        Locks the assessment row FOR UPDATE.
+        """
+        require_permission(principal, Permission.RISK_REVIEW)
+
+        # 1. Lock parent assessment FOR UPDATE
+        assessment = await self._repo.lock_assessment(
+            organization_id=principal.organization_id,
+            assessment_id=assessment_id,
+        )
+        if assessment is None:
+            raise NotFoundError("The requested compliance assessment does not exist.")
+
+        if assessment.status in (AssessmentStatus.COMPLETED, AssessmentStatus.ARCHIVED):
+            raise ConflictError("Assessment is already completed or archived.")
+
+        # 2. Enforce at least one computed score snapshot exists
+        latest_snapshot = await self._repo.get_latest_snapshot(
+            organization_id=principal.organization_id,
+            assessment_id=assessment_id,
+        )
+        if latest_snapshot is None:
+            raise ConflictError(
+                "Cannot finalize an assessment before at least one score computation "
+                "snapshot has been recorded."
+            )
+
+        # 3. Enforce current computation validity and freshness
+        if (
+            assessment.scoring_version is None
+            or assessment.scoring_version != latest_snapshot.scoring_version
+            or assessment.overall_score != latest_snapshot.overall_score
+            or assessment.risk_classification != latest_snapshot.risk_classification
+        ):
+            raise ConflictError(
+                "Assessment scoring inputs have been modified since the last computation. "
+                "Recompute score before finalization."
+            )
+
+        finalized = await self._repo.finalize_assessment(
+            organization_id=principal.organization_id,
+            assessment_id=assessment_id,
+        )
+        if finalized is None:
+            raise NotFoundError("The requested compliance assessment does not exist.")
+
+        logger.info(
+            "compliance_assessment_finalized",
+            organization_id=str(principal.organization_id),
+            assessment_id=str(assessment_id),
+            user_id=str(principal.user_id),
+        )
+
+        active_override, effective_score, effective_cls = (
+            await self._get_active_override_and_effective_scores(
+                organization_id=principal.organization_id,
+                assessment=finalized,
+            )
+        )
+
+        return ComplianceAssessmentResponse(
+            id=finalized.id,
+            organization_id=finalized.organization_id,
+            framework_id=finalized.framework_id,
+            title=finalized.title,
+            status=finalized.status,
+            overall_score=finalized.overall_score,
+            risk_classification=finalized.risk_classification,
+            scoring_version=finalized.scoring_version,
+            created_by=finalized.created_by,
+            created_at=finalized.created_at,
+            updated_at=finalized.updated_at,
+            effective_overall_score=effective_score,
+            effective_risk_classification=effective_cls,
+            latest_override=active_override,
+        )
+
+    async def list_score_overrides(
+        self,
+        *,
+        principal: Principal,
+        assessment_id: UUID,
+    ) -> list[ScoreOverrideResponse]:
+        """List historical score overrides for an assessment in ascending chronological order."""
+        require_permission(principal, Permission.RISK_READ)
+
+        # Enforce assessment existence and tenant isolation
+        await self.get_assessment(principal=principal, assessment_id=assessment_id)
+
+        return await self._repo.list_score_overrides(
+            organization_id=principal.organization_id,
+            assessment_id=assessment_id,
         )
 
     async def get_control_assessment_projection(

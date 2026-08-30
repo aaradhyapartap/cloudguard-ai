@@ -106,6 +106,8 @@ def mock_repo() -> AsyncMock:
         ),
     ]
     repo.lock_assessment = repo.get_assessment
+    repo.get_latest_score_override.return_value = None
+    repo.get_latest_snapshot.return_value = None
     return repo
 
 

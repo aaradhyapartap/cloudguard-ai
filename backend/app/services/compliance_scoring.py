@@ -177,3 +177,23 @@ class RiskScoringEngine:
             raw_scores=raw_scores,
             component_breakdown=component_breakdown,
         )
+
+    @classmethod
+    def classify_score(cls, score: Decimal) -> RiskClassification:
+        """Deterministically map a normalized 0.00..100.00 score to RiskClassification."""
+        if score.is_nan() or score.is_infinite():
+            raise ValueError(f"score must be a finite decimal, got {score}")
+        if score < ZERO or score > HUNDRED:
+            raise ValueError(f"score must be between 0.00 and 100.00, got {score}")
+
+        norm_score = score.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        residual_risk = (HUNDRED - norm_score).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+
+        if residual_risk < Decimal("25.00"):
+            return RiskClassification.LOW
+        elif Decimal("25.00") <= residual_risk < Decimal("50.00"):
+            return RiskClassification.MEDIUM
+        elif Decimal("50.00") <= residual_risk < Decimal("75.00"):
+            return RiskClassification.HIGH
+        else:
+            return RiskClassification.CRITICAL

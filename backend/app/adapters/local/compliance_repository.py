@@ -19,6 +19,7 @@ from app.models.compliance import (
     ComplianceFrameworkRead,
     ControlAssessmentResponse,
     EvidenceReferenceResponse,
+    ScoreOverrideResponse,
 )
 from app.models.enums import (
     AssessmentStatus,
@@ -36,6 +37,7 @@ from app.repositories.tables import (
     Document,
     DocumentChunk,
     EvidenceReference,
+    ScoreOverride,
 )
 
 
@@ -278,12 +280,17 @@ class SQLAlchemyComplianceRepository(ComplianceRepository):
         if status is not None:
             ca.status = status
         if effective_weight is not None:
-            ca.effective_weight = float(effective_weight)
+            ca.effective_weight = effective_weight
         if rationale is not None:
             ca.rationale = rationale
 
-        if touch_assessment and parent is not None and parent.status == AssessmentStatus.DRAFT:
-            parent.status = AssessmentStatus.IN_PROGRESS
+        if touch_assessment and parent is not None:
+            if parent.status == AssessmentStatus.DRAFT:
+                parent.status = AssessmentStatus.IN_PROGRESS
+            # Invalidate current computed score
+            parent.overall_score = None
+            parent.risk_classification = RiskClassification.NOT_SCORED
+            parent.scoring_version = None
 
         await self._session.flush()
         await self._session.refresh(ca)
@@ -368,8 +375,13 @@ class SQLAlchemyComplianceRepository(ComplianceRepository):
                 .with_for_update()
             )
             parent = parent_res.scalar_one_or_none()
-            if touch_assessment and parent is not None and parent.status == AssessmentStatus.DRAFT:
-                parent.status = AssessmentStatus.IN_PROGRESS
+            if touch_assessment and parent is not None:
+                if parent.status == AssessmentStatus.DRAFT:
+                    parent.status = AssessmentStatus.IN_PROGRESS
+                # Invalidate current computed score
+                parent.overall_score = None
+                parent.risk_classification = RiskClassification.NOT_SCORED
+                parent.scoring_version = None
 
         # Check duplicate evidence attachment
         dup_stmt = select(EvidenceReference.id).where(
@@ -479,7 +491,7 @@ class SQLAlchemyComplianceRepository(ComplianceRepository):
         next_revision = int(rev_res.scalar_one())
 
         # 3. Update assessment score fields
-        assessment.overall_score = float(overall_score) if overall_score is not None else None
+        assessment.overall_score = overall_score
         assessment.risk_classification = risk_classification
         assessment.scoring_version = scoring_version
 
@@ -493,7 +505,7 @@ class SQLAlchemyComplianceRepository(ComplianceRepository):
             framework_version=framework_version,
             input_snapshot=input_snapshot,
             raw_scores=raw_scores,
-            overall_score=float(overall_score) if overall_score is not None else None,
+            overall_score=overall_score,
             risk_classification=risk_classification,
             computed_by=computed_by,
         )
@@ -519,6 +531,136 @@ class SQLAlchemyComplianceRepository(ComplianceRepository):
         )
         snapshots = result.scalars().all()
         return [self._to_snapshot_response(s) for s in snapshots]
+
+    async def get_latest_snapshot(
+        self,
+        *,
+        organization_id: UUID,
+        assessment_id: UUID,
+    ) -> AssessmentScoreSnapshotResponse | None:
+        result = await self._session.execute(
+            select(AssessmentScoreSnapshot)
+            .where(
+                AssessmentScoreSnapshot.organization_id == organization_id,
+                AssessmentScoreSnapshot.assessment_id == assessment_id,
+            )
+            .order_by(AssessmentScoreSnapshot.revision_number.desc())
+            .limit(1)
+        )
+        s = result.scalar_one_or_none()
+        if s is None:
+            return None
+        return self._to_snapshot_response(s)
+
+    async def create_score_override(
+        self,
+        *,
+        organization_id: UUID,
+        assessment_id: UUID,
+        snapshot_id: UUID,
+        source_revision_number: int,
+        original_overall_score: Decimal | None,
+        original_risk_classification: RiskClassification,
+        override_overall_score: Decimal,
+        override_risk_classification: RiskClassification,
+        justification: str,
+        overridden_by: UUID,
+    ) -> ScoreOverrideResponse:
+        override = ScoreOverride(
+            id=uuid4(),
+            organization_id=organization_id,
+            assessment_id=assessment_id,
+            snapshot_id=snapshot_id,
+            source_revision_number=source_revision_number,
+            original_overall_score=original_overall_score,
+            original_risk_classification=original_risk_classification,
+            override_overall_score=override_overall_score,
+            override_risk_classification=override_risk_classification,
+            justification=justification,
+            overridden_by=overridden_by,
+        )
+        self._session.add(override)
+        await self._session.flush()
+        await self._session.refresh(override)
+        return self._to_override_response(override)
+
+    async def list_score_overrides(
+        self,
+        *,
+        organization_id: UUID,
+        assessment_id: UUID,
+    ) -> list[ScoreOverrideResponse]:
+        result = await self._session.execute(
+            select(ScoreOverride)
+            .where(
+                ScoreOverride.organization_id == organization_id,
+                ScoreOverride.assessment_id == assessment_id,
+            )
+            .order_by(ScoreOverride.overridden_at.asc(), ScoreOverride.id.asc())
+        )
+        rows = result.scalars().all()
+        return [self._to_override_response(r) for r in rows]
+
+    async def get_latest_score_override(
+        self,
+        *,
+        organization_id: UUID,
+        assessment_id: UUID,
+    ) -> ScoreOverrideResponse | None:
+        result = await self._session.execute(
+            select(ScoreOverride)
+            .where(
+                ScoreOverride.organization_id == organization_id,
+                ScoreOverride.assessment_id == assessment_id,
+            )
+            .order_by(ScoreOverride.overridden_at.desc(), ScoreOverride.id.desc())
+            .limit(1)
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            return None
+        return self._to_override_response(row)
+
+    async def finalize_assessment(
+        self,
+        *,
+        organization_id: UUID,
+        assessment_id: UUID,
+    ) -> ComplianceAssessmentResponse | None:
+        result = await self._session.execute(
+            select(ComplianceAssessment).where(
+                ComplianceAssessment.organization_id == organization_id,
+                ComplianceAssessment.id == assessment_id,
+            )
+        )
+        assessment = result.scalar_one_or_none()
+        if assessment is None:
+            return None
+        assessment.status = AssessmentStatus.COMPLETED
+        await self._session.flush()
+        await self._session.refresh(assessment)
+        return self._to_assessment_response(assessment)
+
+    @staticmethod
+    def _to_override_response(r: ScoreOverride) -> ScoreOverrideResponse:
+        return ScoreOverrideResponse(
+            id=r.id,
+            organization_id=r.organization_id,
+            assessment_id=r.assessment_id,
+            snapshot_id=r.snapshot_id,
+            source_revision_number=r.source_revision_number,
+            original_overall_score=(
+                Decimal(str(r.original_overall_score))
+                if r.original_overall_score is not None
+                else None
+            ),
+            original_risk_classification=r.original_risk_classification,
+            override_overall_score=Decimal(str(r.override_overall_score)),
+            override_risk_classification=r.override_risk_classification,
+            justification=r.justification,
+            overridden_by=r.overridden_by,
+            overridden_at=r.overridden_at,
+        )
 
     @staticmethod
     def _to_assessment_response(a: ComplianceAssessment) -> ComplianceAssessmentResponse:

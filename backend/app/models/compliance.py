@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 from uuid import UUID
 
@@ -169,6 +169,9 @@ class ComplianceAssessmentResponse(DomainModel):
     created_by: UUID
     created_at: datetime
     updated_at: datetime
+    effective_overall_score: Decimal | None = None
+    effective_risk_classification: RiskClassification | None = None
+    latest_override: ScoreOverrideResponse | None = None
 
 
 class ControlAssessmentResponse(DomainModel):
@@ -226,7 +229,7 @@ class EvidenceReferenceResponse(DomainModel):
 
 
 class AssessmentScoreSnapshotResponse(DomainModel):
-    """Immutable audit snapshot of an assessment calculation."""
+    """Immutable internal audit snapshot of an assessment calculation."""
 
     id: UUID
     organization_id: UUID
@@ -240,6 +243,73 @@ class AssessmentScoreSnapshotResponse(DomainModel):
     risk_classification: RiskClassification
     computed_by: UUID | None
     computed_at: datetime
+
+
+class AssessmentScoreSnapshotProjection(DomainModel):
+    """Clearance-safe projection of an immutable score snapshot for API presentation.
+
+    Exposes audit-safe calculation metadata and mathematical score results without
+    leaking raw evidence identifiers or internal provenance details.
+    """
+
+    id: UUID
+    organization_id: UUID
+    assessment_id: UUID
+    revision_number: int
+    scoring_version: str
+    framework_version: str
+    raw_scores: dict[str, Any]
+    overall_score: Decimal | None
+    risk_classification: RiskClassification
+    computed_by: UUID | None
+    computed_at: datetime
+
+
+class ScoreOverrideCreateRequest(DomainModel):
+    """Client request from a Manager to override a computed compliance score."""
+
+    override_overall_score: Decimal = Field(
+        description="Finite override score bounded between 0.00 and 100.00",
+    )
+    justification: str = Field(
+        min_length=1,
+        max_length=2000,
+        description="Mandatory reason explaining the human risk override",
+    )
+
+    @field_validator("override_overall_score")
+    @classmethod
+    def validate_score(cls, v: Decimal) -> Decimal:
+        if v.is_nan() or v.is_infinite():
+            raise ValueError(f"override_overall_score must be a finite decimal, got {v}")
+        if v < Decimal("0.00") or v > Decimal("100.00"):
+            raise ValueError(f"override_overall_score must be between 0.00 and 100.00, got {v}")
+        return v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    @field_validator("justification")
+    @classmethod
+    def validate_justification(cls, v: str) -> str:
+        s = v.strip()
+        if not s:
+            raise ValueError("justification cannot be empty or whitespace only")
+        return s
+
+
+class ScoreOverrideResponse(DomainModel):
+    """Immutable audit record of a Manager score override."""
+
+    id: UUID
+    organization_id: UUID
+    assessment_id: UUID
+    snapshot_id: UUID
+    source_revision_number: int
+    original_overall_score: Decimal | None
+    original_risk_classification: RiskClassification
+    override_overall_score: Decimal
+    override_risk_classification: RiskClassification
+    justification: str
+    overridden_by: UUID
+    overridden_at: datetime
 
 
 # -----------------------------------------------------------------------------
@@ -347,5 +417,8 @@ class ComplianceAssessmentProjection(DomainModel):
     created_by: UUID
     created_at: datetime
     updated_at: datetime
+    effective_overall_score: Decimal | None = None
+    effective_risk_classification: RiskClassification | None = None
+    latest_override: ScoreOverrideResponse | None = None
     controls: list[ControlAssessmentProjection] = Field(default_factory=list)
     any_hidden_evidence: bool = False

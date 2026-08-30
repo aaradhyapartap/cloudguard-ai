@@ -16,6 +16,7 @@ Two conventions applied to every tenant-owned table:
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
@@ -276,7 +277,7 @@ class ComplianceAssessment(Base):
         nullable=False,
         server_default=AssessmentStatus.DRAFT.value,
     )
-    overall_score: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    overall_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
     risk_classification: Mapped[RiskClassification] = mapped_column(
         _pg_enum(RiskClassification, "risk_classification"),
         nullable=False,
@@ -326,7 +327,7 @@ class ControlAssessment(Base):
         nullable=False,
         server_default=ControlStatus.UNASSESSED.value,
     )
-    effective_weight: Mapped[float] = mapped_column(
+    effective_weight: Mapped[Decimal] = mapped_column(
         Numeric(3, 1), nullable=False, server_default="1.0"
     )
     rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -418,6 +419,12 @@ class AssessmentScoreSnapshot(Base):
             "revision_number",
             name="uq_assessment_score_snapshots_assessment_rev",
         ),
+        UniqueConstraint(
+            "assessment_id",
+            "revision_number",
+            "id",
+            name="uq_assessment_snapshots_assessment_rev_id",
+        ),
         ForeignKeyConstraint(
             ["organization_id", "assessment_id"],
             ["compliance_assessments.organization_id", "compliance_assessments.id"],
@@ -448,7 +455,7 @@ class AssessmentScoreSnapshot(Base):
     raw_scores: Mapped[dict[str, object]] = mapped_column(
         JSONB, nullable=False, server_default="{}"
     )
-    overall_score: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    overall_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
     risk_classification: Mapped[RiskClassification] = mapped_column(
         _pg_enum(RiskClassification, "risk_classification"),
         nullable=False,
@@ -457,3 +464,61 @@ class AssessmentScoreSnapshot(Base):
         PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     computed_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+
+
+class ScoreOverride(Base):
+    __tablename__ = "score_overrides"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "assessment_id"],
+            ["compliance_assessments.organization_id", "compliance_assessments.id"],
+            ondelete="CASCADE",
+            name="fk_score_overrides_assessment_org",
+        ),
+        ForeignKeyConstraint(
+            ["assessment_id", "source_revision_number", "snapshot_id"],
+            [
+                "assessment_score_snapshots.assessment_id",
+                "assessment_score_snapshots.revision_number",
+                "assessment_score_snapshots.id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_score_overrides_snapshot_triple",
+        ),
+        Index("ix_score_overrides_org_assessment", "organization_id", "assessment_id"),
+        Index(
+            "ix_score_overrides_org_assessment_created",
+            "organization_id",
+            "assessment_id",
+            "overridden_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    assessment_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=False,
+    )
+    snapshot_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=False,
+    )
+    source_revision_number: Mapped[int] = mapped_column(nullable=False)
+    original_overall_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
+    original_risk_classification: Mapped[RiskClassification] = mapped_column(
+        _pg_enum(RiskClassification, "risk_classification"),
+        nullable=False,
+    )
+    override_overall_score: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
+    override_risk_classification: Mapped[RiskClassification] = mapped_column(
+        _pg_enum(RiskClassification, "risk_classification"),
+        nullable=False,
+    )
+    justification: Mapped[str] = mapped_column(Text, nullable=False)
+    overridden_by: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    overridden_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)

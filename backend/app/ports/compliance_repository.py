@@ -14,6 +14,7 @@ from app.models.compliance import (
     ComplianceFrameworkRead,
     ControlAssessmentResponse,
     EvidenceReferenceResponse,
+    ScoreOverrideResponse,
 )
 from app.models.enums import (
     ConfidentialityLevel,
@@ -186,3 +187,56 @@ class ComplianceRepository(ABC):
         assessment_id: UUID,
     ) -> list[AssessmentScoreSnapshotResponse]:
         """List historical score snapshots for an assessment in ascending revision order."""
+
+    @abstractmethod
+    async def get_latest_snapshot(
+        self,
+        *,
+        organization_id: UUID,
+        assessment_id: UUID,
+    ) -> AssessmentScoreSnapshotResponse | None:
+        """Fetch the most recent score snapshot for an assessment within tenant."""
+
+    @abstractmethod
+    async def create_score_override(
+        self,
+        *,
+        organization_id: UUID,
+        assessment_id: UUID,
+        snapshot_id: UUID,
+        source_revision_number: int,
+        original_overall_score: Decimal | None,
+        original_risk_classification: RiskClassification,
+        override_overall_score: Decimal,
+        override_risk_classification: RiskClassification,
+        justification: str,
+        overridden_by: UUID,
+    ) -> ScoreOverrideResponse:
+        """Persist an immutable score override record."""
+
+    @abstractmethod
+    async def list_score_overrides(
+        self,
+        *,
+        organization_id: UUID,
+        assessment_id: UUID,
+    ) -> list[ScoreOverrideResponse]:
+        """List historical score overrides for an assessment in ascending chronological order."""
+
+    @abstractmethod
+    async def get_latest_score_override(
+        self,
+        *,
+        organization_id: UUID,
+        assessment_id: UUID,
+    ) -> ScoreOverrideResponse | None:
+        """Fetch the most recent score override for an assessment within tenant."""
+
+    @abstractmethod
+    async def finalize_assessment(
+        self,
+        *,
+        organization_id: UUID,
+        assessment_id: UUID,
+    ) -> ComplianceAssessmentResponse | None:
+        """Transition an assessment to COMPLETED status."""

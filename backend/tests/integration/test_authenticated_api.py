@@ -82,6 +82,66 @@ ROUTE_MATRIX: dict[tuple[str, str], dict[Role, int]] = {
         Role.MANAGER: 200,
         Role.ADMIN: 200,
     },
+    ("POST", "/api/v1/compliance/assessments"): {
+        Role.ANALYST: 404,
+        Role.MANAGER: 404,
+        Role.ADMIN: 403,
+    },
+    ("GET", "/api/v1/compliance/assessments"): {
+        Role.ANALYST: 200,
+        Role.MANAGER: 200,
+        Role.ADMIN: 200,
+    },
+    ("GET", "/api/v1/compliance/assessments/{assessment_id}"): {
+        Role.ANALYST: 404,
+        Role.MANAGER: 404,
+        Role.ADMIN: 404,
+    },
+    ("PATCH", "/api/v1/compliance/control-assessments/{control_assessment_id}"): {
+        Role.ANALYST: 404,
+        Role.MANAGER: 404,
+        Role.ADMIN: 403,
+    },
+    ("GET", "/api/v1/compliance/control-assessments/{control_assessment_id}"): {
+        Role.ANALYST: 404,
+        Role.MANAGER: 404,
+        Role.ADMIN: 404,
+    },
+    ("POST", "/api/v1/compliance/control-assessments/{control_assessment_id}/evidence"): {
+        Role.ANALYST: 404,
+        Role.MANAGER: 404,
+        Role.ADMIN: 403,
+    },
+    ("POST", "/api/v1/compliance/assessments/{assessment_id}/compute"): {
+        Role.ANALYST: 404,
+        Role.MANAGER: 404,
+        Role.ADMIN: 403,
+    },
+    ("POST", "/api/v1/compliance/assessments/{assessment_id}/candidates"): {
+        Role.ANALYST: 404,
+        Role.MANAGER: 404,
+        Role.ADMIN: 403,
+    },
+    ("POST", "/api/v1/compliance/assessments/{assessment_id}/finalize"): {
+        Role.ANALYST: 403,
+        Role.MANAGER: 404,
+        Role.ADMIN: 403,
+    },
+    ("POST", "/api/v1/compliance/assessments/{assessment_id}/override"): {
+        Role.ANALYST: 403,
+        Role.MANAGER: 404,
+        Role.ADMIN: 403,
+    },
+    ("GET", "/api/v1/compliance/assessments/{assessment_id}/snapshots"): {
+        Role.ANALYST: 404,
+        Role.MANAGER: 404,
+        Role.ADMIN: 404,
+    },
+    ("GET", "/api/v1/compliance/assessments/{assessment_id}/overrides"): {
+        Role.ANALYST: 404,
+        Role.MANAGER: 404,
+        Role.ADMIN: 404,
+    },
 }
 
 
@@ -116,7 +176,11 @@ def test_route_protection_matrix(
 ) -> None:
     expected = ROUTE_MATRIX[(method, path)][role]
 
-    request_path = path.replace("{document_id}", MISSING_DOCUMENT_ID)
+    request_path = (
+        path.replace("{document_id}", MISSING_DOCUMENT_ID)
+        .replace("{assessment_id}", MISSING_DOCUMENT_ID)
+        .replace("{control_assessment_id}", MISSING_DOCUMENT_ID)
+    )
     headers = bearer(token_signer, principal_for(role))
 
     if method == "POST" and path == "/api/v1/documents":
@@ -132,6 +196,47 @@ def test_route_protection_matrix(
             request_path,
             headers=headers,
             json={"query": "test compliance query", "top_k": 5},
+        )
+    elif method == "POST" and path == "/api/v1/compliance/assessments":
+        response = client.request(
+            method,
+            request_path,
+            headers=headers,
+            json={"framework_id": MISSING_DOCUMENT_ID, "title": "Test Assessment"},
+        )
+    elif (
+        method == "PATCH"
+        and path == "/api/v1/compliance/control-assessments/{control_assessment_id}"
+    ):
+        response = client.request(
+            method,
+            request_path,
+            headers=headers,
+            json={"status": "satisfied", "effective_weight": 2.0},
+        )
+    elif (
+        method == "POST"
+        and path == "/api/v1/compliance/control-assessments/{control_assessment_id}/evidence"
+    ):
+        response = client.request(
+            method,
+            request_path,
+            headers=headers,
+            json={"document_id": MISSING_DOCUMENT_ID},
+        )
+    elif method == "POST" and path == "/api/v1/compliance/assessments/{assessment_id}/candidates":
+        response = client.request(
+            method,
+            request_path,
+            headers=headers,
+            json={"assessment_id": MISSING_DOCUMENT_ID},
+        )
+    elif method == "POST" and path == "/api/v1/compliance/assessments/{assessment_id}/override":
+        response = client.request(
+            method,
+            request_path,
+            headers=headers,
+            json={"override_overall_score": 85.0, "justification": "Manager override"},
         )
     else:
         response = client.request(

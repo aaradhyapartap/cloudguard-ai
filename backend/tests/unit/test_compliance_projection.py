@@ -78,6 +78,7 @@ def mock_repo() -> AsyncMock:
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
     )
+    repo.get_latest_score_override.return_value = None
 
     repo.get_control_assessments.return_value = [
         ControlAssessmentResponse(

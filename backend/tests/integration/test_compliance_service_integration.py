@@ -368,9 +368,16 @@ async def test_full_assessment_lifecycle_and_deterministic_scoring() -> None:
         assert len(snapshots) == 1
         assert snapshots[0].revision_number == 1
         assert snapshots[0].overall_score == Decimal("68.75")
+        # Clearance-safe projection does not expose input_snapshot
+        assert not hasattr(snapshots[0], "input_snapshot")
 
-        # Verify canonical input snapshot contains exact admitted evidence IDs and NO snippets
-        snap_input = snapshots[0].input_snapshot
+        # Verify internal canonical input snapshot in repo persistence
+        repo_snapshots = await repo.list_snapshots(
+            organization_id=ORG_A,
+            assessment_id=assessment_id,
+        )
+        assert len(repo_snapshots) == 1
+        snap_input = repo_snapshots[0].input_snapshot
         assert snap_input["framework_id"] == str(FRAMEWORK_ID)
         assert snap_input["framework_version"] == "2.0"
         assert snap_input["scoring_version"] == "v1.0"
