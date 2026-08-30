@@ -2,95 +2,71 @@
 
 ## Phase
 
-Phase 4 - Retrieval-Augmented Generation
+Phase 4 - Retrieval-Augmented Generation (Completed) / Phase 5 - Deterministic Compliance & Risk Scoring (Planning)
 
 ## Branch
 
-phase-3-document-ingestion
+phase-4-rag
 
-## Phase 3 status
+## Phase 4 Status
 
-Phase 3 - Document Ingestion is complete and pushed.
+Phase 4 - Retrieval-Augmented Generation is complete, verified, and audited.
 
 Completed capabilities include:
 
-- document registration
-- presigned S3 upload flow
-- upload completion verification
-- S3 ObjectCreated -> EventBridge -> Step Functions Standard orchestration
-- deployed Data API document-processing Lambda
-- local SQLAlchemy worker path
-- Aurora Data API processing repository
-- atomic QUEUED -> EXTRACTING processing claim
-- concurrent/replayed event protection
-- text/plain extraction
-- application/pdf extraction
-- deterministic chunking
-- tenant-isolated document chunks with PostgreSQL RLS
-- SQS delivery and execution failure handling
-- custom application EventBridge bus
-- full Phase 3 validation automation
+- **pgvector Persistence Foundation (Phase 4.1)**:
+  - Alembic migration enabling `vector` extension and adding `embedding vector(1024)` column to `document_chunks`.
+  - HNSW index using `vector_cosine_ops`.
+  - Local `SQLAlchemyVectorStore` with pgvector cosine distance operations and RLS enforcement.
+  - Deployed `AuroraDataAPIVectorStore` using parameterized `:embedding::vector` SQL.
+  - Safe vector clearing (`delete_by_document` nulls embedding while preserving chunk rows).
+- **Embedding Generation & Ingestion Lifecycle (Phase 4.2)**:
+  - Independent `EmbeddingProvider` and `LLMProvider` abstractions.
+  - Dedicated `BedrockEmbeddingProvider` for Amazon Titan Text Embeddings v2 (`amazon.titan-embed-text-v2:0`).
+  - Strict ingestion lifecycle: `QUEUED -> EXTRACTING -> INDEXING -> READY`.
+  - Documents transition to `READY` and publish `DocumentIndexed` only after vector persistence succeeds.
+  - Concurrency-safe atomic claims (`claim_for_processing` and `claim_for_indexing`).
+- **Retrieval Orchestration (Phase 4.3)**:
+  - `RetrievalService` composing `EmbeddingProvider` and `VectorStore`.
+  - Strict tenant scoping from `Principal.organization_id`.
+  - Role-based confidentiality clearance ceiling mapping (Analyst = INTERNAL, Manager = CONFIDENTIAL, Admin = RESTRICTED).
+  - API endpoint `POST /api/v1/retrieval/search` guarded by `DOCUMENT_READ`.
+- **RAG Answer Generation (Phase 4.4)**:
+  - `RAGService` composing `RetrievalService` and `LLMProvider`.
+  - Prompt-injection resistant system prompt treating document context as untrusted reference data.
+  - Deterministic source citations (`[S1]`, `[S2]`) with authoritative `RAGSource` mapping.
+  - Hard upper bound enforced on reference context length with deterministic content truncation on first-chunk overflow.
+  - Zero-retrieval results skip LLM generation.
+  - `BedrockLLMProvider` Converse API adapter with fail-closed response validation.
+  - Stable, provider-neutral error normalization (`UpstreamError`).
+  - API endpoint `POST /api/v1/rag/query` guarded by `DOCUMENT_READ`.
 
-Phase 3 final validation:
+Phase 4 final validation:
 
 - Ruff: passed
-- mypy: passed
-- backend tests: 247 passed
+- mypy: passed (78 source files)
+- backend tests: 375 passed with RLS role
 - infrastructure tests: 21 passed
 - git diff --check: passed
 
-Final Phase 3 commit:
+## Current Next Task
 
-84e9376 Complete Phase 3 ingestion concurrency hardening
+Prepare Phase 5 — Deterministic Compliance & Risk Scoring architecture review before implementation.
 
-## Current next task
+Phase 5 goals:
+- Establish compliance evaluation and risk scoring models.
+- Implement deterministic Python scoring engine (versioned `scoring_version`).
+- Keep LLM role bounded to extracting structured estimates while code computes the risk score.
+- Create domain events and audit trails for compliance evaluations.
 
-Begin Phase 4 architecture review before implementation.
-
-The first Phase 4 slice should validate the planned retrieval architecture and
-pgvector compatibility with the Aurora Data API before implementing embeddings
-or retrieval.
-
-## Phase 4 architecture questions to resolve first
-
-- confirm the embedding model and configured vector dimensions
-- inspect existing VectorStore port and adapters
-- validate pgvector operations through the Aurora Data API
-- determine parameter casting required for vector inserts and similarity queries
-- preserve tenant isolation in retrieval
-- define chunk embedding lifecycle and idempotency
-- define retrieval result contract
-- keep AWS SDK calls behind adapters
-- do not put Bedrock SDK calls directly in services
-- do not introduce VPC/NAT unless ADR-0008 is explicitly revisited
-
-## Before editing
+## Before Editing Phase 5
 
 Read:
-
 - AGENTS.md
-- docs/architecture/00-phase0-architecture.md
-- docs/adr/0008-lambda-outside-vpc-via-aurora-data-api.md
-- docs/development/phase3-agent-playbook.md
-- backend/app/ports/vector_store.py
-- backend/app/adapters/
-- backend/app/core/config.py
-- backend/app/core/container.py
+- docs/architecture/00-phase0-architecture.md (§E.4, §P ADR 0005)
+- docs/adr/
 - backend/app/models/
-- backend/migrations/
-- backend/pyproject.toml
-
-## Stop conditions
-
-Stop and request review if:
-
-- pgvector cannot be used safely through Aurora Data API
-- vector dimensionality is unclear
-- the proposed implementation requires Lambda VPC attachment
-- a NAT Gateway appears necessary
-- tenant isolation would need weakening
-- existing repository/service boundaries would need to be bypassed
-- embedding model configuration conflicts with architecture docs
+- backend/app/services/
 
 ## Validation
 
@@ -98,7 +74,7 @@ Full project validation:
 
 powershell -ExecutionPolicy Bypass -File .\scripts\validate-all.ps1
 
-## Commit policy
+## Commit Policy
 
 Do not commit or push until:
 

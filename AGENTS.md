@@ -12,11 +12,12 @@ Do not silently replace accepted architectural decisions.
 
 ## Current phase
 
-Current implementation phase: Phase 3 - Document Ingestion.
+Current implementation phase: Phase 4 - Retrieval-Augmented Generation (Complete).
+Next implementation phase: Phase 5 - Deterministic Compliance & Risk Scoring.
 
-The Phase 3 goal is a reliable document ingestion pipeline that produces tenant-isolated document chunks and reaches READY for supported documents.
+Phase 4 completed vector persistence, embedding generation lifecycle, tenant-isolated retrieval orchestration, and RAG answer generation.
 
-Phase 4 must not begin until the Phase 3 validation checkpoint is green.
+Phase 5 must not begin until the Phase 4 validation checkpoint is green and reviewed.
 
 ## Architecture constraints
 
@@ -135,20 +136,25 @@ Do not commit if any required validation fails.
 - Do not commit generated secrets, .env files, caches, build artifacts, or temporary extraction directories.
 - Do not push if tests are failing.
 
-## Phase 3 remaining work
+## Phase 4 completed work
 
-Continue in this general order unless repository state shows a task is already complete:
+1. pgvector schema, migrations, and HNSW cosine index.
+2. Local SQLAlchemyVectorStore and deployed AuroraDataAPIVectorStore.
+3. Decoupled EmbeddingProvider and LLMProvider boundaries.
+4. Titan Embed Text v2 Bedrock embedding provider.
+5. Ingestion worker embedding generation + vector persistence before READY.
+6. Tenant-isolated, clearance-bounded RetrievalService.
+7. Grounded, prompt-injection resistant RAGService with deterministic citations.
+8. Bedrock Converse LLM generation adapter with fail-closed validation.
+9. Retrieval and RAG API endpoints guarded by DOCUMENT_READ.
+10. Comprehensive unit and PostgreSQL integration tests with RLS.
 
-1. Complete Aurora Data API document-processing repository.
-2. Add focused Data API adapter tests.
-3. Wire deployed worker persistence to the Data API boundary.
-4. Reconcile the production ingestion trigger with the accepted S3 -> EventBridge -> Step Functions architecture.
-5. Add Phase 3 CDK infrastructure.
-6. Add PDF extraction support.
-7. Ensure ingestion failures reach the DLQ.
-8. Validate document status transitions.
-9. Run full backend and infrastructure validation.
-10. Commit and push a clean Phase 3 checkpoint.
+## Phase 5 roadmap (Deterministic Compliance & Risk Scoring)
+
+1. Compliance evaluation and risk estimation domain models.
+2. Versioned deterministic Python risk scoring engine.
+3. Bounded LLM structured extraction for component estimates.
+4. Audit trail and domain events for evaluations.
 
 ## Working style for coding agents
 

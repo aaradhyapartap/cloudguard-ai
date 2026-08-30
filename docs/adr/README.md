@@ -10,7 +10,7 @@ half most people cannot produce.
 | ADR | Decision | Status | Phase |
 |---|---|---|---|
 | [0001](0001-rag-over-fine-tuning.md) | RAG over fine-tuning | accepted | 0 |
-| 0002 | pgvector first, S3 Vectors second | accepted | 0 |
+| [0002](0002-pgvector-first-s3-vectors-second.md) | pgvector first, S3 Vectors second | accepted | 4 |
 | 0003 | Postgres as system of record, DynamoDB for audit | accepted | 0 |
 | 0004 | Custom orchestration over Bedrock AgentCore | accepted | 0 |
 | 0005 | Deterministic risk scoring in Python | accepted | 0 |
@@ -18,7 +18,7 @@ half most people cannot produce.
 | 0007 | Hybrid retrieval from the MVP | accepted | 0 |
 | [0008](0008-lambda-outside-vpc-via-aurora-data-api.md) | Lambda outside VPC via Aurora Data API | accepted | 3 |
 | 0009 | CDK (Python) over Terraform | accepted | 0 |
-| 0010 | Citation verification in application code | accepted | 0 |
+| [0010](0010-citation-verification-in-application-code.md) | Citation verification in application code | accepted | 4 |
 | 0011 | Cassette-based LLM provider for tests | accepted | 0 |
 | 0012 | Static SPA over Next.js SSR | accepted | 0 |
 | [0013](0013-ports-and-adapters.md) | Ports and adapters as the module boundary | accepted | 1 |
