@@ -26,7 +26,13 @@ from app.adapters.mock.document_store import InMemoryDocumentStore
 from app.adapters.mock.event_publisher import InMemoryEventPublisher
 from app.adapters.mock.llm import MockLLMProvider
 from app.adapters.mock.vector_store import InMemoryVectorStore
-from app.core.config import Settings, WorkerSettings, get_settings, get_worker_settings
+from app.core.config import (
+    Environment,
+    Settings,
+    WorkerSettings,
+    get_settings,
+    get_worker_settings,
+)
 from app.core.logging import get_logger
 from app.ports.document_store import DocumentStore
 from app.ports.event_publisher import EventPublisher
@@ -95,7 +101,27 @@ def _build_vector_store(settings: Settings) -> VectorStore:
         case "memory":
             return InMemoryVectorStore()
         case "pgvector":
-            raise AdapterNotAvailableError("VectorStore", "pgvector", "Phase 4")
+            if settings.environment == Environment.LOCAL:
+                from app.adapters.local.vector_store import SQLAlchemyVectorStore
+
+                return SQLAlchemyVectorStore()
+            else:
+                from app.adapters.aws.vector_store import AuroraDataAPIVectorStore
+
+                cluster_arn = settings.aws.aurora_cluster_arn
+                secret_arn = settings.aws.aurora_secret_arn
+                if not cluster_arn or not secret_arn:
+                    raise ValueError(
+                        "AWS_AURORA_CLUSTER_ARN and AWS_AURORA_SECRET_ARN are "
+                        "required when vector_store='pgvector' in deployed environments."
+                    )
+                return AuroraDataAPIVectorStore(
+                    resource_arn=cluster_arn,
+                    secret_arn=secret_arn,
+                    database=settings.database.name,
+                    region=settings.aws.region,
+                    endpoint_url=settings.aws.endpoint_url,
+                )
         case "s3_vectors":
             raise AdapterNotAvailableError("VectorStore", "s3_vectors", "Phase 11")
 

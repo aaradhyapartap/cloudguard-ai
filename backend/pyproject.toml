@@ -19,9 +19,11 @@ dependencies = [
     "alembic>=1.14",
     "mangum>=0.19",
     "uvicorn[standard]>=0.32",
-    # Pure-Python PDF text extraction \u2014 no native extensions required.
+    # Pure-Python PDF text extraction — no native extensions required.
     # Used in document_processing.py for application/pdf content type support.
     "pypdf>=4.0",
+    # pgvector SQLAlchemy support for vector embeddings
+    "pgvector>=0.3",
 ]
 
 [project.optional-dependencies]

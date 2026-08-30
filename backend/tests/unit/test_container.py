@@ -17,7 +17,7 @@ def test_local_defaults_bind_test_doubles(settings: Settings) -> None:
 
 def test_unimplemented_adapter_names_the_phase_that_adds_it() -> None:
     with pytest.raises(AdapterNotAvailableError, match="Phase 4"):
-        build_container(Settings(vector_store="pgvector"))
+        build_container(Settings(llm_provider="recorded"))
 
 
 def test_s3_vectors_is_deferred_to_phase_11() -> None:

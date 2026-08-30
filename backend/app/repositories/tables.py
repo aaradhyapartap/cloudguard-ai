@@ -20,6 +20,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     ForeignKey,
@@ -178,6 +179,10 @@ class DocumentChunk(Base):
         JSONB,
         nullable=False,
         server_default="{}",
+    )
+    embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(1024),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         server_default=func.now(),

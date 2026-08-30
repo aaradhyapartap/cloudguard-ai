@@ -13,11 +13,43 @@ omission being obvious in review.
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from uuid import UUID
 
 from app.models.ai import VectorMatch, VectorRecord
 from app.models.enums import ConfidentialityLevel
+
+EXPECTED_EMBEDDING_DIMENSIONS = 1024
+MIN_TOP_K = 1
+MAX_TOP_K = 100
+
+
+def validate_embedding(embedding: list[float], *, label: str = "embedding") -> None:
+    """Validate vector dimensionality and finite numeric values without leaking vectors."""
+    if len(embedding) != EXPECTED_EMBEDDING_DIMENSIONS:
+        raise ValueError(
+            f"Invalid {label} dimensions: "
+            f"expected {EXPECTED_EMBEDDING_DIMENSIONS}, got {len(embedding)}"
+        )
+    for idx, val in enumerate(embedding):
+        if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val):
+            raise ValueError(
+                f"Invalid {label} value at index {idx}: must be a finite numeric value."
+            )
+
+
+def validate_top_k(top_k: int) -> None:
+    """Ensure top_k is bounded to a safe positive range."""
+    if (
+        isinstance(top_k, bool)
+        or not isinstance(top_k, int)
+        or top_k < MIN_TOP_K
+        or top_k > MAX_TOP_K
+    ):
+        raise ValueError(
+            f"top_k must be an integer between {MIN_TOP_K} and {MAX_TOP_K}, got {top_k}"
+        )
 
 
 class VectorStore(ABC):
@@ -44,4 +76,4 @@ class VectorStore(ABC):
 
     @abstractmethod
     async def delete_by_document(self, *, document_id: UUID, organization_id: UUID) -> int:
-        """Remove every vector for a document. Returns the number deleted."""
+        """Remove every vector for a document. Returns the number of vectors cleared."""
