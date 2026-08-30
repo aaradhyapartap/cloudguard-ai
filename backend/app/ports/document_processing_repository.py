@@ -13,6 +13,20 @@ class DocumentProcessingRepository(ABC):
     """Persistence boundary for the ingestion worker."""
 
     @abstractmethod
+    async def claim_for_processing(
+        self,
+        *,
+        organization_id: UUID,
+        document_id: UUID,
+    ) -> bool:
+        """Atomically claim a QUEUED document for extraction.
+
+        Transitions status from QUEUED to EXTRACTING. Returns True if this
+        worker acquired the claim (exactly one row updated), or False if the
+        document is not in QUEUED state or belongs to another tenant.
+        """
+
+    @abstractmethod
     async def get_document(
         self,
         *,

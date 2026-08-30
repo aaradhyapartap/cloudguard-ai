@@ -109,9 +109,7 @@ class DocumentService:
         if metadata is None:
             raise NotFoundError("The uploaded document object does not exist.")
 
-        document.processing_status = ProcessingStatus.EXTRACTING
-        document.processing_error = None
-
+        # Document remains QUEUED — the worker owns the atomic QUEUED -> EXTRACTING claim.
         await self._events.publish(
             DomainEvent(
                 event_type="DocumentUploadCompleted",

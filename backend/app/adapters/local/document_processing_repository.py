@@ -1,9 +1,10 @@
-﻿"""SQLAlchemy adapter for document-processing persistence."""
+"""SQLAlchemy adapter for document-processing persistence."""
 
 from __future__ import annotations
 
 from uuid import UUID
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.documents import ProcessingChunk, ProcessingDocument
@@ -12,15 +13,39 @@ from app.models.tenant import TenantScope
 from app.ports.document_processing_repository import DocumentProcessingRepository
 from app.repositories.document_chunks import DocumentChunkRepository
 from app.repositories.documents import DocumentRepository
-from app.repositories.tables import DocumentChunk
+from app.repositories.tables import Document, DocumentChunk
 
 
 class SQLAlchemyDocumentProcessingRepository(DocumentProcessingRepository):
     """Document-processing persistence using the tenant-scoped ORM repositories."""
 
     def __init__(self, *, session: AsyncSession, scope: TenantScope) -> None:
+        self._session = session
         self._documents = DocumentRepository(session, scope)
         self._chunks = DocumentChunkRepository(session, scope)
+
+    async def claim_for_processing(
+        self,
+        *,
+        organization_id: UUID,
+        document_id: UUID,
+    ) -> bool:
+        stmt = (
+            update(Document)
+            .where(
+                Document.organization_id == organization_id,
+                Document.id == document_id,
+                Document.processing_status == ProcessingStatus.QUEUED,
+            )
+            .values(
+                processing_status=ProcessingStatus.EXTRACTING,
+                processing_error=None,
+            )
+        )
+        result = await self._session.execute(stmt)
+        await self._session.flush()
+        rowcount = getattr(result, "rowcount", 0)
+        return bool(rowcount == 1)
 
     async def get_document(
         self,

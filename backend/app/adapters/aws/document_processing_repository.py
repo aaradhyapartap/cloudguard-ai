@@ -177,6 +177,56 @@ class AuroraDataAPIDocumentProcessingRepository(DocumentProcessingRepository):
                 )
             raise
 
+    async def claim_for_processing(
+        self,
+        *,
+        organization_id: UUID,
+        document_id: UUID,
+    ) -> bool:
+        async def operation(transaction_id: str) -> bool:
+            response = await self._execute(
+                sql=(
+                    "UPDATE documents "
+                    "SET processing_status = "
+                    "CAST(:extracting AS processing_status), "
+                    "processing_error = NULL, "
+                    "updated_at = now() "
+                    "WHERE organization_id = :organization_id "
+                    "AND id = :document_id "
+                    "AND processing_status = "
+                    "CAST(:queued AS processing_status)"
+                ),
+                transaction_id=transaction_id,
+                parameters=[
+                    {
+                        "name": "extracting",
+                        "value": {"stringValue": ProcessingStatus.EXTRACTING.value},
+                    },
+                    {
+                        "name": "queued",
+                        "value": {"stringValue": ProcessingStatus.QUEUED.value},
+                    },
+                    {
+                        "name": "organization_id",
+                        "value": {"stringValue": str(organization_id)},
+                        "typeHint": "UUID",
+                    },
+                    {
+                        "name": "document_id",
+                        "value": {"stringValue": str(document_id)},
+                        "typeHint": "UUID",
+                    },
+                ],
+            )
+            updated_count = int(response.get("numberOfRecordsUpdated", 0) or 0)
+            return updated_count == 1
+
+        result = await self._run_in_tenant_transaction(
+            organization_id=organization_id,
+            operation=operation,
+        )
+        return bool(result)
+
     async def get_document(
         self,
         *,

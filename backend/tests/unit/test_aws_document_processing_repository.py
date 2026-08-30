@@ -19,9 +19,15 @@ DOCUMENT_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 
 
 class FakeRDSDataClient:
-    def __init__(self, *, fail_on: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        fail_on: str | None = None,
+        number_of_records_updated: int = 1,
+    ) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self._fail_on = fail_on
+        self.number_of_records_updated = number_of_records_updated
 
     def begin_transaction(self, **kwargs: Any) -> dict[str, str]:
         self.calls.append(("begin_transaction", kwargs))
@@ -37,6 +43,9 @@ class FakeRDSDataClient:
         sql = str(kwargs["sql"])
         if sql.startswith("SELECT set_config"):
             return {}
+
+        if "UPDATE documents" in sql:
+            return {"numberOfRecordsUpdated": self.number_of_records_updated}
 
         return {
             "records": [
@@ -82,6 +91,58 @@ def _make_repository(
         region="us-east-1",
         client=client,
     )
+
+
+# --- claim_for_processing ---
+
+
+async def test_claim_for_processing_success() -> None:
+    """claim_for_processing must conditionally UPDATE status from QUEUED to EXTRACTING."""
+    client = FakeRDSDataClient(number_of_records_updated=1)
+    repository = _make_repository(client)
+
+    claimed = await repository.claim_for_processing(
+        organization_id=ORG_ID,
+        document_id=DOCUMENT_ID,
+    )
+
+    assert claimed is True
+    assert [name for name, _ in client.calls] == [
+        "begin_transaction",
+        "execute_statement",
+        "execute_statement",
+        "commit_transaction",
+    ]
+
+    update_call = client.calls[2][1]
+    assert update_call["transactionId"] == "tx-123"
+    sql = update_call["sql"]
+    assert "UPDATE documents" in sql
+    assert "processing_status = CAST(:extracting AS processing_status)" in sql
+    assert "processing_status = CAST(:queued AS processing_status)" in sql
+    assert "organization_id = :organization_id" in sql
+    assert "id = :document_id" in sql
+
+    params = {p["name"]: p for p in update_call["parameters"]}
+    assert params["extracting"]["value"]["stringValue"] == "extracting"
+    assert params["queued"]["value"]["stringValue"] == "queued"
+    assert params["organization_id"]["value"]["stringValue"] == str(ORG_ID)
+    assert params["organization_id"]["typeHint"] == "UUID"
+    assert params["document_id"]["value"]["stringValue"] == str(DOCUMENT_ID)
+    assert params["document_id"]["typeHint"] == "UUID"
+
+
+async def test_claim_for_processing_returns_false_when_not_queued() -> None:
+    """claim_for_processing returns False when 0 rows are updated (e.g. not in QUEUED status)."""
+    client = FakeRDSDataClient(number_of_records_updated=0)
+    repository = _make_repository(client)
+
+    claimed = await repository.claim_for_processing(
+        organization_id=ORG_ID,
+        document_id=DOCUMENT_ID,
+    )
+
+    assert claimed is False
 
 
 # --- get_document ---

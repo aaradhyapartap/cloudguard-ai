@@ -90,7 +90,9 @@ def make_service(
     return service, document_store, events
 
 
-async def test_complete_upload_moves_document_to_extracting() -> None:
+async def test_complete_upload_leaves_document_queued_and_publishes_event() -> None:
+    """complete_upload must verify the object and leave the document QUEUED so
+    the worker owns the atomic QUEUED -> EXTRACTING claim."""
     document = make_document()
     service, store, events = make_service(document)
 
@@ -102,8 +104,8 @@ async def test_complete_upload_moves_document_to_extracting() -> None:
 
     response = await service.complete_upload(DOCUMENT_ID)
 
-    assert response.processing_status is ProcessingStatus.EXTRACTING
-    assert document.processing_status is ProcessingStatus.EXTRACTING
+    assert response.processing_status is ProcessingStatus.QUEUED
+    assert document.processing_status is ProcessingStatus.QUEUED
     assert document.processing_error is None
     assert [event.event_type for event in events.events] == [
         "DocumentUploadCompleted"

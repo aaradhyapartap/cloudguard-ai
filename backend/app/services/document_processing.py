@@ -39,15 +39,26 @@ class DocumentProcessingService:
     async def process_document(self, document_id: UUID) -> None:
         organization_id = self._scope.organization_id
 
+        claimed = await self._repository.claim_for_processing(
+            organization_id=organization_id,
+            document_id=document_id,
+        )
+        if not claimed:
+            # Check whether the document exists or is in an invalid/already-processed state.
+            document = await self._repository.get_document(
+                organization_id=organization_id,
+                document_id=document_id,
+            )
+            if document is None:
+                raise NotFoundError()
+            raise ConflictError("The document is not ready for extraction.")
+
         document = await self._repository.get_document(
             organization_id=organization_id,
             document_id=document_id,
         )
         if document is None:
             raise NotFoundError()
-
-        if document.processing_status is not ProcessingStatus.EXTRACTING:
-            raise ConflictError("The document is not ready for extraction.")
 
         if document.content_type not in _SUPPORTED_CONTENT_TYPES:
             error = f"Unsupported content type: {document.content_type}"
@@ -122,6 +133,10 @@ class DocumentProcessingService:
                     return
             else:
                 text = body.decode("utf-8")
+                if not text.strip():
+                    raise _DocumentExtractionError(
+                        "The document contains no extractable text."
+                    )
 
             await self._repository.set_status(
                 organization_id=organization_id,
@@ -184,7 +199,7 @@ class DocumentProcessingService:
 
             raise ConflictError(error) from exc
 
-        except _PdfProcessingError as exc:
+        except _DocumentExtractionError as exc:
             error = str(exc)
 
             await self._repository.set_status(
@@ -213,7 +228,7 @@ class DocumentProcessingService:
 
         Returns ``(text, None)`` on success, or ``("", reason)`` when the
         document must be quarantined (e.g. encrypted PDF).  Raises
-        ``_PdfProcessingError`` for malformed/unreadable files.
+        ``_DocumentExtractionError`` for malformed/unreadable files.
 
         Image-only PDFs that yield no extractable text are treated as a
         processing failure so they never silently reach READY without content.
@@ -279,7 +294,13 @@ class DocumentProcessingService:
         ]
 
 
-class _PdfProcessingError(Exception):
-    """Raised when PDF text extraction fails for a non-encrypted reason."""
+class _DocumentExtractionError(Exception):
+    """Raised when document text extraction fails for a non-quarantine reason."""
+
+    pass
+
+
+class _PdfProcessingError(_DocumentExtractionError):
+    """Raised when PDF text extraction fails for a non-quarantine reason."""
 
     pass

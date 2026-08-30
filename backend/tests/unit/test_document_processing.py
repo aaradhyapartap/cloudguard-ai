@@ -53,7 +53,7 @@ def _make_text_pdf(*pages: str) -> bytes:
         font_dict[NameObject("/Type")] = NameObject("/Font")
         font_dict[NameObject("/Subtype")] = NameObject("/Type1")
         font_dict[NameObject("/BaseFont")] = NameObject("/Helvetica")
-        font_ref = writer._add_object(font_dict)  # type: ignore[attr-defined]
+        font_ref = writer._add_object(font_dict)
 
         fonts: DictionaryObject = DictionaryObject()
         fonts[NameObject("/F1")] = font_ref
@@ -61,7 +61,7 @@ def _make_text_pdf(*pages: str) -> bytes:
         resources: DictionaryObject = DictionaryObject()
         resources[NameObject("/Font")] = fonts
 
-        content_ref = writer._add_object(stream_obj)  # type: ignore[attr-defined]
+        content_ref = writer._add_object(stream_obj)
         page[NameObject("/Contents")] = content_ref
         page[NameObject("/Resources")] = resources
 
@@ -99,6 +99,26 @@ class FakeDocumentProcessingRepository(DocumentProcessingRepository):
         self.document = document
         self.processing_error: str | None = None
         self.chunks: list[ProcessingChunk] = []
+
+    async def claim_for_processing(
+        self,
+        *,
+        organization_id: UUID,
+        document_id: UUID,
+    ) -> bool:
+        if self.document is None:
+            return False
+        if (
+            organization_id != self.document.organization_id
+            or document_id != self.document.id
+        ):
+            return False
+        if self.document.processing_status is not ProcessingStatus.QUEUED:
+            return False
+        self.document = self.document.model_copy(
+            update={"processing_status": ProcessingStatus.EXTRACTING}
+        )
+        return True
 
     async def get_document(
         self,
@@ -149,7 +169,7 @@ def make_scope() -> TenantScope:
 def make_document(
     *,
     content_type: str = "text/plain",
-    status: ProcessingStatus = ProcessingStatus.EXTRACTING,
+    status: ProcessingStatus = ProcessingStatus.QUEUED,
     filename: str = "policy.txt",
 ) -> ProcessingDocument:
     return ProcessingDocument(
@@ -185,6 +205,92 @@ def make_service(
 
 
 # ---------------------------------------------------------------------------
+# Atomic claim & status lifecycle
+# ---------------------------------------------------------------------------
+
+
+async def test_atomic_claim_succeeds_from_queued() -> None:
+    """claim_for_processing on a QUEUED document must return True and transition to EXTRACTING."""
+    document = make_document(status=ProcessingStatus.QUEUED)
+    repository = FakeDocumentProcessingRepository(document)
+
+    claimed = await repository.claim_for_processing(
+        organization_id=ORG_ID,
+        document_id=DOCUMENT_ID,
+    )
+
+    assert claimed is True
+    assert repository.document.processing_status is ProcessingStatus.EXTRACTING
+
+
+async def test_atomic_claim_second_claim_returns_false() -> None:
+    """A second claim attempt on the same document must return False (exactly one worker wins)."""
+    document = make_document(status=ProcessingStatus.QUEUED)
+    repository = FakeDocumentProcessingRepository(document)
+
+    first_claim = await repository.claim_for_processing(
+        organization_id=ORG_ID,
+        document_id=DOCUMENT_ID,
+    )
+    second_claim = await repository.claim_for_processing(
+        organization_id=ORG_ID,
+        document_id=DOCUMENT_ID,
+    )
+
+    assert first_claim is True
+    assert second_claim is False
+    assert repository.document.processing_status is ProcessingStatus.EXTRACTING
+
+
+@pytest.mark.parametrize(
+    "invalid_status",
+    [
+        ProcessingStatus.EXTRACTING,
+        ProcessingStatus.INDEXING,
+        ProcessingStatus.READY,
+        ProcessingStatus.FAILED,
+        ProcessingStatus.QUARANTINED,
+    ],
+)
+async def test_atomic_claim_fails_for_non_queued_statuses(
+    invalid_status: ProcessingStatus,
+) -> None:
+    """claim_for_processing must return False for any document not in QUEUED status."""
+    document = make_document(status=invalid_status)
+    repository = FakeDocumentProcessingRepository(document)
+
+    claimed = await repository.claim_for_processing(
+        organization_id=ORG_ID,
+        document_id=DOCUMENT_ID,
+    )
+
+    assert claimed is False
+    assert repository.document.processing_status is invalid_status
+
+
+async def test_service_does_not_extract_or_add_chunks_when_claim_is_lost() -> None:
+    """When a worker loses the atomic claim (e.g. document already claimed/processed),
+    process_document raises ConflictError without reading storage, adding chunks,
+    or emitting events.
+    """
+    document = make_document(status=ProcessingStatus.EXTRACTING)
+    service, store, events, repository = make_service(document)
+
+    await store.put_object(
+        key=document.storage_key,
+        body=b"Unused body",
+        content_type="text/plain",
+    )
+
+    with pytest.raises(ConflictError, match="not ready for extraction"):
+        await service.process_document(DOCUMENT_ID)
+
+    assert repository.document.processing_status is ProcessingStatus.EXTRACTING
+    assert repository.chunks == []
+    assert events.events == []
+
+
+# ---------------------------------------------------------------------------
 # text/plain — existing behaviour must be preserved
 # ---------------------------------------------------------------------------
 
@@ -208,12 +314,99 @@ async def test_process_text_document_creates_ordered_chunks() -> None:
     assert [event.event_type for event in events.events] == ["DocumentIndexed"]
 
 
-async def test_process_document_rejects_wrong_starting_status() -> None:
+async def test_process_document_from_queued_status_succeeds() -> None:
+    """A document starting from QUEUED (direct S3 upload) must reach READY."""
     document = make_document(status=ProcessingStatus.QUEUED)
-    service, _, _, _ = make_service(document)
+    service, store, events, repository = make_service(document)
+
+    await store.put_object(
+        key=document.storage_key,
+        body=b"Direct S3 upload policy text content.",
+        content_type="text/plain",
+    )
+
+    await service.process_document(DOCUMENT_ID)
+
+    assert repository.document.processing_status is ProcessingStatus.READY
+    assert len(repository.chunks) >= 1
+    assert [event.event_type for event in events.events] == ["DocumentIndexed"]
+
+
+@pytest.mark.parametrize(
+    "invalid_status",
+    [
+        ProcessingStatus.READY,
+        ProcessingStatus.INDEXING,
+        ProcessingStatus.FAILED,
+        ProcessingStatus.QUARANTINED,
+    ],
+)
+async def test_process_document_rejects_terminal_or_in_progress_statuses(
+    invalid_status: ProcessingStatus,
+) -> None:
+    """Duplicate/replayed events on non-extractable documents must raise ConflictError
+    and must not modify the document, insert chunks, or emit events.
+    """
+    document = make_document(status=invalid_status)
+    service, store, events, repository = make_service(document)
+
+    await store.put_object(
+        key=document.storage_key,
+        body=b"Some content",
+        content_type="text/plain",
+    )
+
+    with pytest.raises(ConflictError, match="not ready for extraction"):
+        await service.process_document(DOCUMENT_ID)
+
+    # Document status and chunks must remain completely untouched.
+    assert repository.document.processing_status is invalid_status
+    assert repository.chunks == []
+    assert events.events == []
+
+
+async def test_process_empty_text_document_marks_as_failed() -> None:
+    """A 0-byte text document must transition to FAILED and never reach READY."""
+    document = make_document(content_type="text/plain", filename="empty.txt")
+    service, store, events, repository = make_service(document)
+
+    await store.put_object(
+        key=document.storage_key,
+        body=b"",
+        content_type="text/plain",
+    )
 
     with pytest.raises(ConflictError):
         await service.process_document(DOCUMENT_ID)
+
+    assert repository.document.processing_status is ProcessingStatus.FAILED
+    assert repository.processing_error == "The document contains no extractable text."
+    assert repository.chunks == []
+    assert [event.event_type for event in events.events] == [
+        "DocumentProcessingFailed"
+    ]
+
+
+async def test_process_whitespace_only_text_document_marks_as_failed() -> None:
+    """A whitespace-only text document must transition to FAILED and never reach READY."""
+    document = make_document(content_type="text/plain", filename="blank.txt")
+    service, store, events, repository = make_service(document)
+
+    await store.put_object(
+        key=document.storage_key,
+        body=b"   \n\t  \r\n   ",
+        content_type="text/plain",
+    )
+
+    with pytest.raises(ConflictError):
+        await service.process_document(DOCUMENT_ID)
+
+    assert repository.document.processing_status is ProcessingStatus.FAILED
+    assert repository.processing_error == "The document contains no extractable text."
+    assert repository.chunks == []
+    assert [event.event_type for event in events.events] == [
+        "DocumentProcessingFailed"
+    ]
 
 
 async def test_process_document_quarantines_unsupported_content_type() -> None:
