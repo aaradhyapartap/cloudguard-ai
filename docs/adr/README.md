@@ -13,7 +13,7 @@ half most people cannot produce.
 | [0002](0002-pgvector-first-s3-vectors-second.md) | pgvector first, S3 Vectors second | accepted | 4 |
 | 0003 | Postgres as system of record, DynamoDB for audit | accepted | 0 |
 | 0004 | Custom orchestration over Bedrock AgentCore | accepted | 0 |
-| 0005 | Deterministic risk scoring in Python | accepted | 0 |
+| [0005](0005-deterministic-risk-scoring-in-python.md) | Deterministic risk scoring in Python | accepted | 5 |
 | 0006 | Fixed agent graph, no emergent delegation | accepted | 0 |
 | 0007 | Hybrid retrieval from the MVP | accepted | 0 |
 | [0008](0008-lambda-outside-vpc-via-aurora-data-api.md) | Lambda outside VPC via Aurora Data API | accepted | 3 |

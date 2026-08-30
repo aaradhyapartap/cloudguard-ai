@@ -51,22 +51,70 @@ Phase 4 final validation:
 
 ## Current Next Task
 
-Prepare Phase 5 — Deterministic Compliance & Risk Scoring architecture review before implementation.
+Phase 5 Architecture & Requirements Planning — Deterministic Compliance & Risk Scoring.
 
-Phase 5 goals:
-- Establish compliance evaluation and risk scoring models.
-- Implement deterministic Python scoring engine (versioned `scoring_version`).
-- Keep LLM role bounded to extracting structured estimates while code computes the risk score.
-- Create domain events and audit trails for compliance evaluations.
+### Core Architecture Invariants:
 
-## Before Editing Phase 5
+1. **Actor-Independent Deterministic Scoring**:
+   - **Evidence Admission**: Tenant and clearance boundaries are strictly enforced when evidence is attached or retrieved. Admitted evidence must point to real tenant document chunks.
+   - **Authoritative Scoring**: Pure mathematical calculation operating strictly on persisted `ControlAssessment` inputs and validated `EvidenceReference` IDs. The resulting score is 100% identical regardless of whether an Analyst, Manager, Admin, or background worker computes it.
+   - **Evidence Visibility & Projection**: API responses project and redact evidence based on caller clearance after scoring. Any `EvidenceReference` above the caller's clearance is **completely omitted** from the visible evidence list (exposing zero document IDs, chunk IDs, filenames, snippets, confidentiality levels, or location metadata) and sets a generic `hidden_evidence_present = True` flag on the control. Presentation projection never changes score computation.
 
-Read:
-- AGENTS.md
-- docs/architecture/00-phase0-architecture.md (§E.4, §P ADR 0005)
-- docs/adr/
-- backend/app/models/
-- backend/app/services/
+2. **Reproducibility Invariant**:
+   - `same scoring_version` + `same framework/control snapshot` + `same statuses/applicability` + `same effective weights` + `same validated evidence IDs` $\implies$ **identical raw control scores, aggregate compliance score, and risk classification**, independent of caller identity. (Timestamps, snapshot IDs, and event IDs are excluded from equality).
+
+3. **Zero-Applicable Controls & Status Semantics**:
+   - `overall_score = None` (`null` in JSON) when `applicable_control_count == 0`.
+   - `risk_classification = RiskClassification.NOT_SCORED` when no controls are applicable.
+   - An assessment with zero applicable controls is never treated as 100% compliant or LOW risk.
+   - `UNASSESSED`: Applicable control that has not yet been assessed. Scores `0.0` (conservative) and counts in the denominator.
+   - `NOT_APPLICABLE`: Confirmed non-applicable control. Excluded from both numerator and denominator.
+   - `DEFICIENT`: Failed control requirement. Scores `0.0` and counts in the denominator.
+   - `PARTIALLY_SATISFIED`: Scores `50.0` (or `35.0` with ungrounded evidence penalty).
+   - `SATISFIED`: Scores `100.0` (or `70.0` with ungrounded evidence penalty).
+
+4. **Scoring Input Lifecycle**:
+   - `Candidate`: LLM/retrieval proposes candidate statuses and quotes (non-authoritative).
+   - `Accepted/Validated`: User or deterministic rule validates evidence against real tenant document chunks and admits into `control_assessments`.
+   - `Computed Snapshot`: `RiskScoringEngine` computes score snapshot with `scoring_version = 'v1.0'`.
+
+5. **RBAC & Authorization Matrix**:
+   - **`Permission.COMPLIANCE_CREATE = "compliance:create"`**:
+     - Assigned to: `Analyst`, `Manager`.
+     - Admin does **not** receive this permission (preserves segregation of duties: Admin cannot author, compute/mutate, finalize, or override assessments).
+     - Required for: `POST /api/v1/compliance/assessments`, `POST /api/v1/compliance/assessments/{id}/compute`.
+   - **`Permission.RISK_READ = "risk:read"`**:
+     - Assigned to: `Analyst`, `Manager`, `Admin`.
+     - Required for read-only GET endpoints.
+   - **`Permission.RISK_REVIEW = "risk:review"`**:
+     - Assigned to: `Manager` only.
+     - Required for assessment review / finalization.
+   - **`Permission.RISK_MODIFY_SEVERITY = "risk:modify_severity"`**:
+     - Assigned to: `Manager` only.
+     - Required for score / severity overrides with mandatory justification.
+
+### Phase 5 Architectural Slices:
+
+1. **Phase 5.1 — Domain Models & Deterministic Scoring Engine**:
+   - Define domain models: `ComplianceFramework`, `ComplianceControl`, `ControlAssessment`, `ComplianceAssessment`, `RiskFinding`, `ScoreOverride`, `EvidenceReference`, `RiskClassification.NOT_SCORED`.
+   - Add `Permission.COMPLIANCE_CREATE` to authz model for Analyst and Manager.
+   - Implement pure deterministic Python scoring engine (`RiskScoringEngine`) with versioned formula (`scoring_version = 'v1.0'`).
+   - Unit test pure mathematical scoring, edge cases, weighting, missing evidence penalties, not-applicable exclusions, and rounding.
+
+2. **Phase 5.2 — Persistence Schema & RLS Migrations**:
+   - Add Alembic migration creating tables: `compliance_frameworks`, `compliance_controls`, `compliance_assessments`, `control_assessments`, `risk_findings`, `score_overrides`.
+   - Enable PostgreSQL Row-Level Security on all tenant tables.
+   - Implement repositories / persistence adapters for SQLAlchemy.
+
+3. **Phase 5.3 — Bounded LLM Extraction & Compliance Assessment Service**:
+   - `ComplianceAssessmentService` orchestrating assessment creation, automated evidence matching via `RetrievalService`, and deterministic score computation via `RiskScoringEngine`.
+   - Bounded structured LLM extraction for candidate findings and summaries (LLM never assigns authoritative score).
+   - Enforce tenant and confidentiality isolation at admission and visibility layers.
+   - Publish domain events via `EventPublisher` (`ComplianceAssessmentCreated`, `ComplianceAssessmentComputed`, `ComplianceAssessmentOverridden`).
+
+4. **Phase 5.4 — Compliance API & Human Override Workflow**:
+   - API endpoints: `POST /api/v1/compliance/assessments`, `GET /api/v1/compliance/assessments/{id}`, `POST /api/v1/compliance/assessments/{id}/compute`, `POST /api/v1/compliance/assessments/{id}/override`.
+   - Integration tests with PostgreSQL RLS role `cloudguard_app`.
 
 ## Validation
 
