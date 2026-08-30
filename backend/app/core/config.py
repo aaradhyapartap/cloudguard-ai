@@ -255,9 +255,12 @@ class WorkerSettings(BaseSettings):
     log_format: Literal["json", "console"] = "console"
     document_store: Literal["memory", "s3"] = "memory"
     event_publisher: Literal["memory", "eventbridge"] = "memory"
+    vector_store: Literal["memory", "pgvector"] = "memory"
+    llm_provider: Literal["mock", "recorded", "bedrock"] = "mock"
 
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     aws: AWSSettings = Field(default_factory=AWSSettings)
+    bedrock: BedrockSettings = Field(default_factory=BedrockSettings)
 
 
 @lru_cache

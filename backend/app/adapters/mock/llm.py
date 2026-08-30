@@ -13,11 +13,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from datetime import UTC, datetime
 
+from app.adapters.mock.embedding import MockEmbeddingProvider
 from app.models.ai import (
-    EmbeddingResult,
     GenerationRequest,
     GenerationResponse,
     TokenUsage,
@@ -25,7 +24,8 @@ from app.models.ai import (
 from app.ports.llm_provider import LLMProvider
 
 _MOCK_CHAT_MODEL = "mock:chat-v1"
-_MOCK_EMBEDDING_MODEL = "mock:embed-v1"
+
+__all__ = ["MockEmbeddingProvider", "MockLLMProvider"]
 
 
 def _stable_hash(payload: str) -> int:
@@ -38,18 +38,12 @@ def _approx_tokens(text: str) -> int:
 
 
 class MockLLMProvider(LLMProvider):
-    def __init__(self, *, dimensions: int = 1024) -> None:
-        self._dimensions = dimensions
+    def __init__(self) -> None:
         self.generate_calls: list[GenerationRequest] = []
-        self.embed_calls: list[list[str]] = []
 
     @property
     def chat_model_id(self) -> str:
         return _MOCK_CHAT_MODEL
-
-    @property
-    def embedding_model_id(self) -> str:
-        return _MOCK_EMBEDDING_MODEL
 
     async def generate(self, request: GenerationRequest) -> GenerationResponse:
         self.generate_calls.append(request)
@@ -74,28 +68,6 @@ class MockLLMProvider(LLMProvider):
             latency_ms=1,
             generated_at=datetime.now(UTC),
         )
-
-    async def embed(self, texts: list[str]) -> EmbeddingResult:
-        self.embed_calls.append(texts)
-        return EmbeddingResult(
-            vectors=[self._deterministic_vector(text) for text in texts],
-            model_id=_MOCK_EMBEDDING_MODEL,
-            dimensions=self._dimensions,
-            input_tokens=sum(_approx_tokens(text) for text in texts),
-        )
-
-    def _deterministic_vector(self, text: str) -> list[float]:
-        """Unit-norm pseudo-embedding.
-
-        Similar strings produce similar vectors because the seed is derived from
-        the text, which makes retrieval tests meaningful rather than random.
-        """
-        seed = _stable_hash(text)
-        raw = [
-            math.sin(seed * (index + 1) * 0.000_001) for index in range(self._dimensions)
-        ]
-        norm = math.sqrt(sum(value * value for value in raw)) or 1.0
-        return [value / norm for value in raw]
 
 
 def _schema_stub(schema: dict[str, object]) -> dict[str, object]:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import Field
 
@@ -60,11 +60,13 @@ class ProcessingDocument(DomainModel):
     storage_key: str
     content_type: str
     processing_status: ProcessingStatus
+    confidentiality_level: ConfidentialityLevel = ConfidentialityLevel.INTERNAL
 
 
 class ProcessingChunk(DomainModel):
     """Chunk payload produced before persistence."""
 
+    id: UUID = Field(default_factory=uuid4)
     chunk_index: int
     content: str
     token_count: int

@@ -20,7 +20,7 @@ from uuid import UUID
 from app.core.errors import UpstreamError
 from app.core.logging import get_logger
 from app.models.documents import ProcessingChunk, ProcessingDocument
-from app.models.enums import ProcessingStatus
+from app.models.enums import ConfidentialityLevel, ProcessingStatus
 from app.ports.document_processing_repository import DocumentProcessingRepository
 
 logger = get_logger(__name__)
@@ -237,7 +237,8 @@ class AuroraDataAPIDocumentProcessingRepository(DocumentProcessingRepository):
             response = await self._execute(
                 sql=(
                     "SELECT id, organization_id, filename, storage_key, "
-                    "content_type, processing_status "
+                    "content_type, processing_status, "
+                    "CAST(confidentiality_level AS text) "
                     "FROM documents "
                     "WHERE organization_id = :organization_id "
                     "AND id = :document_id "
@@ -275,6 +276,7 @@ class AuroraDataAPIDocumentProcessingRepository(DocumentProcessingRepository):
                 storage_key=values[3],
                 content_type=values[4],
                 processing_status=ProcessingStatus(values[5]),
+                confidentiality_level=ConfidentialityLevel(values[6]),
             )
 
         result: ProcessingDocument | None = await self._run_in_tenant_transaction(
@@ -365,15 +367,13 @@ class AuroraDataAPIDocumentProcessingRepository(DocumentProcessingRepository):
             return
 
         async def operation(transaction_id: str) -> None:
-            from uuid import uuid4
-
             parameter_sets: list[list[dict[str, Any]]] = []
             for chunk in chunks:
                 parameter_sets.append(
                     [
                         {
                             "name": "id",
-                            "value": {"stringValue": str(uuid4())},
+                            "value": {"stringValue": str(chunk.id)},
                             "typeHint": "UUID",
                         },
                         {

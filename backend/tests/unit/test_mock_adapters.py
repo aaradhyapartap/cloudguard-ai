@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+from app.adapters.mock.embedding import MockEmbeddingProvider
 from app.adapters.mock.event_publisher import InMemoryEventPublisher
 from app.adapters.mock.llm import MockLLMProvider
 from app.adapters.mock.vector_store import InMemoryVectorStore
@@ -12,7 +13,7 @@ from app.models.enums import ConfidentialityLevel
 
 
 async def test_mock_llm_is_deterministic() -> None:
-    provider = MockLLMProvider(dimensions=64)
+    provider = MockLLMProvider()
     request = GenerationRequest(messages=[Message(role="user", content="policy?")])
     first = await provider.generate(request)
     second = await provider.generate(request)
@@ -20,7 +21,7 @@ async def test_mock_llm_is_deterministic() -> None:
 
 
 async def test_mock_llm_reports_usage() -> None:
-    provider = MockLLMProvider(dimensions=64)
+    provider = MockLLMProvider()
     response = await provider.generate(
         GenerationRequest(messages=[Message(role="user", content="a" * 400)])
     )
@@ -31,7 +32,7 @@ async def test_mock_llm_reports_usage() -> None:
 
 
 async def test_mock_embeddings_are_stable_and_normalised() -> None:
-    provider = MockLLMProvider(dimensions=32)
+    provider = MockEmbeddingProvider(dimensions=32)
     first = await provider.embed(["vendor access review"])
     second = await provider.embed(["vendor access review"])
     assert first.vectors == second.vectors

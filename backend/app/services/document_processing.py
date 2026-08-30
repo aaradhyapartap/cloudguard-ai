@@ -1,4 +1,4 @@
-"""Internal document extraction and chunking service."""
+"""Internal document extraction, chunking, embedding, and vector indexing service."""
 
 from __future__ import annotations
 
@@ -7,13 +7,15 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from app.core.errors import ConflictError, NotFoundError, UpstreamError
-from app.models.ai import DomainEvent
+from app.models.ai import DomainEvent, VectorRecord
 from app.models.documents import ProcessingChunk, ProcessingDocument
 from app.models.enums import ProcessingStatus
 from app.models.tenant import TenantScope
 from app.ports.document_processing_repository import DocumentProcessingRepository
 from app.ports.document_store import DocumentStore
 from app.ports.event_publisher import EventPublisher
+from app.ports.llm_provider import EmbeddingProvider
+from app.ports.vector_store import VectorStore
 
 TEXT_CHUNK_SIZE = 1000
 
@@ -30,11 +32,15 @@ class DocumentProcessingService:
         repository: DocumentProcessingRepository,
         document_store: DocumentStore,
         event_publisher: EventPublisher,
+        vector_store: VectorStore,
+        embedding_provider: EmbeddingProvider,
     ) -> None:
         self._scope = scope
         self._repository = repository
         self._document_store = document_store
         self._events = event_publisher
+        self._vectors = vector_store
+        self._embeddings = embedding_provider
 
     async def process_document(self, document_id: UUID) -> None:
         organization_id = self._scope.organization_id
@@ -149,30 +155,15 @@ class DocumentProcessingService:
                 document=document,
                 text=text,
             )
+            if not chunks:
+                raise _DocumentExtractionError(
+                    "The document contains no extractable text."
+                )
 
             await self._repository.add_chunks(
                 organization_id=organization_id,
                 document_id=document.id,
                 chunks=chunks,
-            )
-
-            await self._repository.set_status(
-                organization_id=organization_id,
-                document_id=document.id,
-                status=ProcessingStatus.READY,
-                error=None,
-            )
-
-            await self._events.publish(
-                DomainEvent(
-                    event_type="DocumentIndexed",
-                    organization_id=str(organization_id),
-                    payload={
-                        "document_id": str(document.id),
-                        "chunk_count": len(chunks),
-                    },
-                    occurred_at=datetime.now(UTC),
-                )
             )
 
         except UnicodeDecodeError as exc:
@@ -223,21 +214,111 @@ class DocumentProcessingService:
 
             raise ConflictError(error) from exc
 
+        # 4. Generate embeddings for document chunks
+        _embedding_failure_msg = "The document could not be embedded."
+        try:
+            texts_to_embed = [chunk.content for chunk in chunks]
+            embedding_result = await self._embeddings.embed(texts_to_embed)
+            if len(embedding_result.vectors) != len(chunks):
+                raise ValueError("Embedding count does not match chunk count.")
+        except Exception as exc:
+            await self._repository.set_status(
+                organization_id=organization_id,
+                document_id=document.id,
+                status=ProcessingStatus.FAILED,
+                error=_embedding_failure_msg,
+            )
+            await self._events.publish(
+                DomainEvent(
+                    event_type="DocumentProcessingFailed",
+                    organization_id=str(organization_id),
+                    payload={
+                        "document_id": str(document.id),
+                        "reason": _embedding_failure_msg,
+                    },
+                    occurred_at=datetime.now(UTC),
+                )
+            )
+            raise UpstreamError(_embedding_failure_msg) from exc
+
+        # 5. Persist embeddings via VectorStore
+        _vector_failure_msg = "The document vectors could not be saved."
+        conf_val = (
+            document.confidentiality_level.value
+            if hasattr(document.confidentiality_level, "value")
+            else str(document.confidentiality_level)
+        )
+        vector_records = [
+            VectorRecord(
+                chunk_id=str(chunk.id),
+                document_id=str(document.id),
+                organization_id=str(organization_id),
+                embedding=vector,
+                content=chunk.content,
+                metadata={
+                    "confidentiality_level": conf_val,
+                    "content_type": document.content_type,
+                    "filename": document.filename,
+                    "chunk_index": chunk.chunk_index,
+                },
+            )
+            for chunk, vector in zip(chunks, embedding_result.vectors, strict=True)
+        ]
+
+        try:
+            updated_count = await self._vectors.upsert(vector_records)
+            if updated_count != len(chunks):
+                raise ValueError(
+                    f"Expected {len(chunks)} vectors upserted, got {updated_count}"
+                )
+        except Exception as exc:
+            await self._repository.set_status(
+                organization_id=organization_id,
+                document_id=document.id,
+                status=ProcessingStatus.FAILED,
+                error=_vector_failure_msg,
+            )
+            await self._events.publish(
+                DomainEvent(
+                    event_type="DocumentProcessingFailed",
+                    organization_id=str(organization_id),
+                    payload={
+                        "document_id": str(document.id),
+                        "reason": _vector_failure_msg,
+                    },
+                    occurred_at=datetime.now(UTC),
+                )
+            )
+            raise UpstreamError(_vector_failure_msg) from exc
+
+        # 6. Mark document as READY and publish DocumentIndexed event
+        await self._repository.set_status(
+            organization_id=organization_id,
+            document_id=document.id,
+            status=ProcessingStatus.READY,
+            error=None,
+        )
+
+        await self._events.publish(
+            DomainEvent(
+                event_type="DocumentIndexed",
+                organization_id=str(organization_id),
+                payload={
+                    "document_id": str(document.id),
+                    "chunk_count": len(chunks),
+                },
+                occurred_at=datetime.now(UTC),
+            )
+        )
+
     def _extract_pdf_text(self, body: bytes) -> tuple[str, str | None]:
         """Extract plain text from a PDF byte payload.
 
         Returns ``(text, None)`` on success, or ``("", reason)`` when the
-        document must be quarantined (e.g. encrypted PDF).  Raises
+        document must be quarantined (e.g. encrypted PDF). Raises
         ``_DocumentExtractionError`` for malformed/unreadable files.
-
-        Image-only PDFs that yield no extractable text are treated as a
-        processing failure so they never silently reach READY without content.
-        OCR is not attempted.
         """
-        # pypdf is a pure-Python library with no native dependencies — safe to
-        # import here inside the service rather than in an adapter because no
-        # AWS SDK is involved (see ADR-0013).
-        import pypdf  # lazy import keeps the module loadable without the dep
+        import pypdf
         from pypdf.errors import PdfReadError
 
         try:

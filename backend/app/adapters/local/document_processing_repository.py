@@ -64,6 +64,7 @@ class SQLAlchemyDocumentProcessingRepository(DocumentProcessingRepository):
             storage_key=document.storage_key,
             content_type=document.content_type,
             processing_status=document.processing_status,
+            confidentiality_level=document.confidentiality_level,
         )
 
     async def set_status(
@@ -90,6 +91,7 @@ class SQLAlchemyDocumentProcessingRepository(DocumentProcessingRepository):
     ) -> None:
         entities = [
             DocumentChunk(
+                id=chunk.id,
                 organization_id=organization_id,
                 document_id=document_id,
                 chunk_index=chunk.chunk_index,

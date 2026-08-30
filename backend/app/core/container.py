@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from app.adapters.cognito.identity import CognitoIdentityProvider
 from app.adapters.local.identity import LocalIdentityProvider
 from app.adapters.mock.document_store import InMemoryDocumentStore
+from app.adapters.mock.embedding import MockEmbeddingProvider
 from app.adapters.mock.event_publisher import InMemoryEventPublisher
 from app.adapters.mock.llm import MockLLMProvider
 from app.adapters.mock.vector_store import InMemoryVectorStore
@@ -37,7 +38,7 @@ from app.core.logging import get_logger
 from app.ports.document_store import DocumentStore
 from app.ports.event_publisher import EventPublisher
 from app.ports.identity_provider import IdentityProvider
-from app.ports.llm_provider import LLMProvider
+from app.ports.llm_provider import EmbeddingProvider, LLMProvider
 from app.ports.vector_store import VectorStore
 
 logger = get_logger(__name__)
@@ -60,6 +61,7 @@ class Container:
     settings: Settings
     identity: IdentityProvider
     llm: LLMProvider
+    embeddings: EmbeddingProvider
     vectors: VectorStore
     documents: DocumentStore
     events: EventPublisher
@@ -86,17 +88,34 @@ def _build_identity(settings: Settings) -> IdentityProvider:
             raise ValueError(f"Unknown identity provider: {settings.identity_provider}")
 
 
+def _build_embeddings(settings: Settings | WorkerSettings) -> EmbeddingProvider:
+    match settings.llm_provider:
+        case "mock":
+            return MockEmbeddingProvider(dimensions=settings.bedrock.embedding_dimensions)
+        case "recorded":
+            raise AdapterNotAvailableError("EmbeddingProvider", "recorded", "Phase 4")
+        case "bedrock":
+            from app.adapters.bedrock.embedding import BedrockEmbeddingProvider
+
+            return BedrockEmbeddingProvider(
+                embedding_model_id=settings.bedrock.embedding_model,
+                dimensions=settings.bedrock.embedding_dimensions,
+                region=settings.aws.region,
+                endpoint_url=settings.aws.endpoint_url,
+            )
+
+
 def _build_llm(settings: Settings) -> LLMProvider:
     match settings.llm_provider:
         case "mock":
-            return MockLLMProvider(dimensions=settings.bedrock.embedding_dimensions)
+            return MockLLMProvider()
         case "recorded":
             raise AdapterNotAvailableError("LLMProvider", "recorded", "Phase 4")
         case "bedrock":
-            raise AdapterNotAvailableError("LLMProvider", "bedrock", "Phase 4")
+            raise AdapterNotAvailableError("LLMProvider", "bedrock", "Phase 5")
 
 
-def _build_vector_store(settings: Settings) -> VectorStore:
+def _build_vector_store(settings: Settings | WorkerSettings) -> VectorStore:
     match settings.vector_store:
         case "memory":
             return InMemoryVectorStore()
@@ -160,6 +179,7 @@ def build_container(settings: Settings | None = None) -> Container:
         settings=resolved,
         identity=_build_identity(resolved),
         llm=_build_llm(resolved),
+        embeddings=_build_embeddings(resolved),
         vectors=_build_vector_store(resolved),
         documents=_build_document_store(resolved),
         events=_build_event_publisher(resolved),
@@ -183,6 +203,8 @@ class WorkerContainer:
     settings: Settings | WorkerSettings
     documents: DocumentStore
     events: EventPublisher
+    vectors: VectorStore
+    embeddings: EmbeddingProvider
 
 
 def build_worker_container(
@@ -193,11 +215,15 @@ def build_worker_container(
         settings=resolved,
         documents=_build_document_store(resolved),
         events=_build_event_publisher(resolved),
+        vectors=_build_vector_store(resolved),
+        embeddings=_build_embeddings(resolved),
     )
     logger.info(
         "worker_container_built",
         environment=resolved.environment.value,
         document_store=resolved.document_store,
         event_publisher=resolved.event_publisher,
+        vector_store=resolved.vector_store,
+        embedding_provider=resolved.llm_provider,
     )
     return container

@@ -47,10 +47,11 @@ async def test_deployed_worker_processes_normalized_payload(
     from app import deployed_document_worker
 
     processed_ids: list[UUID] = []
+    service_kwargs: dict[str, Any] = {}
 
     class FakeService:
         def __init__(self, **kwargs: Any) -> None:
-            pass
+            service_kwargs.update(kwargs)
 
         async def process_document(self, document_id: UUID) -> None:
             processed_ids.append(document_id)
@@ -70,6 +71,8 @@ async def test_deployed_worker_processes_normalized_payload(
     )
 
     assert processed_ids == [DOCUMENT_ID]
+    assert "vector_store" in service_kwargs
+    assert "embedding_provider" in service_kwargs
 
 
 async def test_deployed_worker_fails_missing_organization_id() -> None:

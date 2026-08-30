@@ -60,6 +60,7 @@ class FakeRDSDataClient:
                     },
                     {"stringValue": "text/plain"},
                     {"stringValue": "extracting"},
+                    {"stringValue": "internal"},
                 ]
             ]
         }

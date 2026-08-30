@@ -8,13 +8,18 @@ from uuid import UUID
 import pypdf
 import pytest
 from app.adapters.mock.document_store import InMemoryDocumentStore
+from app.adapters.mock.embedding import MockEmbeddingProvider
 from app.adapters.mock.event_publisher import InMemoryEventPublisher
+from app.adapters.mock.vector_store import InMemoryVectorStore
 from app.core.errors import ConflictError, UpstreamError
+from app.models.ai import EmbeddingResult, VectorRecord
 from app.models.documents import ProcessingChunk, ProcessingDocument
-from app.models.enums import ProcessingStatus
+from app.models.enums import ConfidentialityLevel, ProcessingStatus
 from app.models.tenant import TenantScope
 from app.ports.document_processing_repository import DocumentProcessingRepository
 from app.ports.document_store import DocumentStore
+from app.ports.llm_provider import EmbeddingProvider
+from app.ports.vector_store import VectorStore
 from app.services.document_processing import DocumentProcessingService
 
 ORG_ID = UUID("11111111-1111-4111-8111-111111111111")
@@ -58,16 +63,16 @@ def _make_text_pdf(*pages: str) -> bytes:
         fonts: DictionaryObject = DictionaryObject()
         fonts[NameObject("/F1")] = font_ref
 
-        resources: DictionaryObject = DictionaryObject()
-        resources[NameObject("/Font")] = fonts
+        font_resources: DictionaryObject = DictionaryObject()
+        font_resources[NameObject("/Font")] = fonts
 
-        content_ref = writer._add_object(stream_obj)
-        page[NameObject("/Contents")] = content_ref
-        page[NameObject("/Resources")] = resources
+        page_resources = writer._add_object(font_resources)
+        page[NameObject("/Resources")] = page_resources
+        page[NameObject("/Contents")] = writer._add_object(stream_obj)
 
-    buf = io.BytesIO()
-    writer.write(buf)
-    return buf.getvalue()
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
 
 
 def _make_encrypted_pdf() -> bytes:
@@ -90,15 +95,16 @@ def _make_blank_pdf() -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Test infrastructure
+# In-memory test doubles
 # ---------------------------------------------------------------------------
 
 
 class FakeDocumentProcessingRepository(DocumentProcessingRepository):
     def __init__(self, document: ProcessingDocument) -> None:
         self.document = document
-        self.processing_error: str | None = None
+        self.status_history: list[ProcessingStatus] = [document.processing_status]
         self.chunks: list[ProcessingChunk] = []
+        self.processing_error: str | None = None
 
     async def claim_for_processing(
         self,
@@ -106,19 +112,17 @@ class FakeDocumentProcessingRepository(DocumentProcessingRepository):
         organization_id: UUID,
         document_id: UUID,
     ) -> bool:
-        if self.document is None:
-            return False
         if (
-            organization_id != self.document.organization_id
-            or document_id != self.document.id
+            self.document.organization_id == organization_id
+            and self.document.id == document_id
+            and self.document.processing_status is ProcessingStatus.QUEUED
         ):
-            return False
-        if self.document.processing_status is not ProcessingStatus.QUEUED:
-            return False
-        self.document = self.document.model_copy(
-            update={"processing_status": ProcessingStatus.EXTRACTING}
-        )
-        return True
+            self.document = self.document.model_copy(
+                update={"processing_status": ProcessingStatus.EXTRACTING}
+            )
+            self.status_history.append(ProcessingStatus.EXTRACTING)
+            return True
+        return False
 
     async def get_document(
         self,
@@ -126,11 +130,12 @@ class FakeDocumentProcessingRepository(DocumentProcessingRepository):
         organization_id: UUID,
         document_id: UUID,
     ) -> ProcessingDocument | None:
-        if organization_id != self.document.organization_id:
-            return None
-        if document_id != self.document.id:
-            return None
-        return self.document
+        if (
+            self.document.organization_id == organization_id
+            and self.document.id == document_id
+        ):
+            return self.document
+        return None
 
     async def set_status(
         self,
@@ -140,13 +145,15 @@ class FakeDocumentProcessingRepository(DocumentProcessingRepository):
         status: ProcessingStatus,
         error: str | None,
     ) -> None:
-        if organization_id != self.document.organization_id:
-            return
-        if document_id != self.document.id:
-            return
-
-        self.document = self.document.model_copy(update={"processing_status": status})
-        self.processing_error = error
+        if (
+            self.document.organization_id == organization_id
+            and self.document.id == document_id
+        ):
+            self.document = self.document.model_copy(
+                update={"processing_status": status}
+            )
+            self.status_history.append(status)
+            self.processing_error = error
 
     async def add_chunks(
         self,
@@ -155,11 +162,11 @@ class FakeDocumentProcessingRepository(DocumentProcessingRepository):
         document_id: UUID,
         chunks: list[ProcessingChunk],
     ) -> None:
-        if organization_id != self.document.organization_id:
-            return
-        if document_id != self.document.id:
-            return
-        self.chunks.extend(chunks)
+        if (
+            self.document.organization_id == organization_id
+            and self.document.id == document_id
+        ):
+            self.chunks = list(chunks)
 
 
 def make_scope() -> TenantScope:
@@ -171,6 +178,7 @@ def make_document(
     content_type: str = "text/plain",
     status: ProcessingStatus = ProcessingStatus.QUEUED,
     filename: str = "policy.txt",
+    confidentiality_level: ConfidentialityLevel = ConfidentialityLevel.INTERNAL,
 ) -> ProcessingDocument:
     return ProcessingDocument(
         id=DOCUMENT_ID,
@@ -179,11 +187,15 @@ def make_document(
         storage_key=f"org/{ORG_ID}/documents/{DOCUMENT_ID}/{filename}",
         content_type=content_type,
         processing_status=status,
+        confidentiality_level=confidentiality_level,
     )
 
 
 def make_service(
     document: ProcessingDocument,
+    *,
+    vector_store: VectorStore | None = None,
+    embedding_provider: EmbeddingProvider | None = None,
 ) -> tuple[
     DocumentProcessingService,
     InMemoryDocumentStore,
@@ -193,12 +205,16 @@ def make_service(
     store = InMemoryDocumentStore()
     events = InMemoryEventPublisher()
     repository = FakeDocumentProcessingRepository(document)
+    vectors = vector_store or InMemoryVectorStore()
+    embeddings = embedding_provider or MockEmbeddingProvider()
 
     service = DocumentProcessingService(
         scope=make_scope(),
         repository=repository,
         document_store=store,
         event_publisher=events,
+        vector_store=vectors,
+        embedding_provider=embeddings,
     )
 
     return service, store, events, repository
@@ -612,6 +628,8 @@ async def test_storage_failure_marks_document_as_failed() -> None:
         repository=repository,
         document_store=_FailingDocumentStore(),
         event_publisher=events,
+        vector_store=InMemoryVectorStore(),
+        embedding_provider=MockEmbeddingProvider(),
     )
 
     with pytest.raises(UpstreamError):
@@ -631,3 +649,334 @@ async def test_storage_failure_marks_document_as_failed() -> None:
     event_payload = events.events[0].payload
     # Payload reason must also be stable/non-sensitive.
     assert event_payload["reason"] == "The document could not be retrieved from storage."
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.2 Embedding & Vector Ingestion Lifecycle Tests
+# ---------------------------------------------------------------------------
+
+
+class _FailingEmbeddingProvider(EmbeddingProvider):
+    async def embed(self, texts: list[str]) -> EmbeddingResult:
+        raise UpstreamError("Bedrock unavailable")
+
+    @property
+    def embedding_model_id(self) -> str:
+        return "mock:failing"
+
+
+class _MismatchedCountEmbeddingProvider(EmbeddingProvider):
+    async def embed(self, texts: list[str]) -> EmbeddingResult:
+        # Return fewer vectors than texts
+        return EmbeddingResult(
+            vectors=[[0.01] * 1024] if texts else [],
+            model_id="mock:mismatched",
+            dimensions=1024,
+            input_tokens=10,
+        )
+
+    @property
+    def embedding_model_id(self) -> str:
+        return "mock:mismatched"
+
+
+class _FailingVectorStore(VectorStore):
+    async def upsert(self, records: list[VectorRecord]) -> int:
+        raise UpstreamError("Vector database unavailable")
+
+    async def search(self, **kwargs: object) -> list[object]:
+        return []
+
+    async def delete_by_document(self, **kwargs: object) -> int:
+        return 0
+
+
+class _PartialCountVectorStore(VectorStore):
+    async def upsert(self, records: list[VectorRecord]) -> int:
+        return max(0, len(records) - 1)  # Upsert 1 fewer than expected
+
+    async def search(self, **kwargs: object) -> list[object]:
+        return []
+
+    async def delete_by_document(self, **kwargs: object) -> int:
+        return 0
+
+
+async def test_process_document_success_persists_embeddings_and_marks_ready() -> None:
+    """Document reaching READY must have generated embeddings and persisted vectors."""
+    doc = make_document(
+        content_type="text/plain",
+        confidentiality_level=ConfidentialityLevel.INTERNAL,
+    )
+    vector_store = InMemoryVectorStore()
+    embedding_provider = MockEmbeddingProvider()
+
+    service, store, events, repo = make_service(
+        doc,
+        vector_store=vector_store,
+        embedding_provider=embedding_provider,
+    )
+
+    await store.put_object(
+        key=doc.storage_key,
+        body=b"Security policy section 1.\nSecurity policy section 2.",
+        content_type="text/plain",
+    )
+
+    await service.process_document(doc.id)
+
+    # Document must reach READY
+    assert repo.document.processing_status is ProcessingStatus.READY
+    assert repo.processing_error is None
+    assert len(repo.chunks) == 1
+
+    # Vectors must be persisted in vector_store
+    matches = await vector_store.search(
+        embedding=[0.0] * 1024,
+        organization_id=ORG_ID,
+        confidentiality_levels=(ConfidentialityLevel.INTERNAL,),
+        top_k=10,
+    )
+    assert len(matches) == 1
+    assert matches[0].document_id == str(doc.id)
+    assert matches[0].chunk_id == str(repo.chunks[0].id)
+
+    # Event DocumentIndexed must be published
+    event_types = [e.event_type for e in events.events]
+    assert event_types == ["DocumentIndexed"]
+    assert events.events[0].payload["chunk_count"] == 1
+
+
+async def test_process_pdf_document_success_persists_embeddings_and_marks_ready() -> None:
+    """PDF document reaching READY must generate embeddings and persist vectors."""
+    doc = make_document(
+        content_type="application/pdf",
+        filename="cloud_policy.pdf",
+    )
+    vector_store = InMemoryVectorStore()
+    embedding_provider = MockEmbeddingProvider()
+
+    service, store, _events, repo = make_service(
+        doc,
+        vector_store=vector_store,
+        embedding_provider=embedding_provider,
+    )
+
+    pdf_bytes = _make_text_pdf("Page 1 cloud architecture policy", "Page 2 tenant data isolation")
+    await store.put_object(
+        key=doc.storage_key,
+        body=pdf_bytes,
+        content_type="application/pdf",
+    )
+
+    await service.process_document(doc.id)
+
+    assert repo.document.processing_status is ProcessingStatus.READY
+    assert len(repo.chunks) == 1
+
+    matches = await vector_store.search(
+        embedding=[0.0] * 1024,
+        organization_id=ORG_ID,
+        confidentiality_levels=(ConfidentialityLevel.INTERNAL,),
+        top_k=10,
+    )
+    assert len(matches) == 1
+    assert matches[0].document_id == str(doc.id)
+
+
+async def test_embedding_failure_transitions_to_failed() -> None:
+    """Embedding failure transitions document to FAILED and publishes DocumentProcessingFailed."""
+    doc = make_document()
+    vector_store = InMemoryVectorStore()
+    failing_embeddings = _FailingEmbeddingProvider()
+
+    service, store, events, repo = make_service(
+        doc,
+        vector_store=vector_store,
+        embedding_provider=failing_embeddings,
+    )
+
+    await store.put_object(
+        key=doc.storage_key,
+        body=b"Text to embed",
+        content_type="text/plain",
+    )
+
+    with pytest.raises(UpstreamError, match=r"The document could not be embedded\."):
+        await service.process_document(doc.id)
+
+    assert repo.document.processing_status is ProcessingStatus.FAILED
+    assert repo.processing_error == "The document could not be embedded."
+
+    event_types = [e.event_type for e in events.events]
+    assert event_types == ["DocumentProcessingFailed"]
+    assert events.events[0].payload["reason"] == "The document could not be embedded."
+
+
+async def test_mismatched_embedding_count_transitions_to_failed() -> None:
+    """If embedding provider returns wrong vector count, document transitions to FAILED."""
+    doc = make_document()
+    vector_store = InMemoryVectorStore()
+    mismatched_embeddings = _MismatchedCountEmbeddingProvider()
+
+    service, store, events, repo = make_service(
+        doc,
+        vector_store=vector_store,
+        embedding_provider=mismatched_embeddings,
+    )
+
+    # 2500 chars -> 3 chunks
+    await store.put_object(
+        key=doc.storage_key,
+        body=b"A" * 2500,
+        content_type="text/plain",
+    )
+
+    with pytest.raises(UpstreamError, match=r"The document could not be embedded\."):
+        await service.process_document(doc.id)
+
+    assert repo.document.processing_status is ProcessingStatus.FAILED
+    assert repo.processing_error == "The document could not be embedded."
+    assert not any(e.event_type == "DocumentIndexed" for e in events.events)
+
+
+async def test_vector_persistence_failure_transitions_to_failed() -> None:
+    """VectorStore failure transitions document to FAILED and publishes DocumentProcessingFailed."""
+    doc = make_document()
+    failing_vectors = _FailingVectorStore()
+    embeddings = MockEmbeddingProvider()
+
+    service, store, events, repo = make_service(
+        doc,
+        vector_store=failing_vectors,
+        embedding_provider=embeddings,
+    )
+
+    await store.put_object(
+        key=doc.storage_key,
+        body=b"Text to embed",
+        content_type="text/plain",
+    )
+
+    with pytest.raises(UpstreamError, match=r"The document vectors could not be saved\."):
+        await service.process_document(doc.id)
+
+    assert repo.document.processing_status is ProcessingStatus.FAILED
+    assert repo.processing_error == "The document vectors could not be saved."
+
+    event_types = [e.event_type for e in events.events]
+    assert event_types == ["DocumentProcessingFailed"]
+    assert events.events[0].payload["reason"] == "The document vectors could not be saved."
+
+
+async def test_mismatched_vector_upsert_count_transitions_to_failed() -> None:
+    """If VectorStore.upsert affects fewer rows than expected, document transitions to FAILED."""
+    doc = make_document()
+    partial_vectors = _PartialCountVectorStore()
+    embeddings = MockEmbeddingProvider()
+
+    service, store, events, repo = make_service(
+        doc,
+        vector_store=partial_vectors,
+        embedding_provider=embeddings,
+    )
+
+    await store.put_object(
+        key=doc.storage_key,
+        body=b"Text to embed",
+        content_type="text/plain",
+    )
+
+    with pytest.raises(UpstreamError, match=r"The document vectors could not be saved\."):
+        await service.process_document(doc.id)
+
+    assert repo.document.processing_status is ProcessingStatus.FAILED
+    assert repo.processing_error == "The document vectors could not be saved."
+    assert not any(e.event_type == "DocumentIndexed" for e in events.events)
+
+
+async def test_duplicate_invocation_while_extracting_fails_with_conflict() -> None:
+    """A concurrent worker invocation while document is EXTRACTING cannot claim it."""
+    doc = make_document(status=ProcessingStatus.EXTRACTING)
+    service, _store, events, repo = make_service(doc)
+
+    with pytest.raises(ConflictError, match=r"The document is not ready for extraction\."):
+        await service.process_document(doc.id)
+
+    # State and chunks must remain completely untouched
+    assert repo.document.processing_status is ProcessingStatus.EXTRACTING
+    assert repo.chunks == []
+    assert events.events == []
+
+
+async def test_invocation_for_failed_document_does_not_silently_reprocess() -> None:
+    """An invocation for a FAILED document must not mutate or reprocess it."""
+    doc = make_document(status=ProcessingStatus.FAILED)
+    service, _store, events, repo = make_service(doc)
+
+    with pytest.raises(ConflictError, match=r"The document is not ready for extraction\."):
+        await service.process_document(doc.id)
+
+    assert repo.document.processing_status is ProcessingStatus.FAILED
+    assert repo.chunks == []
+    assert events.events == []
+
+
+async def test_invocation_for_ready_document_does_not_mutate() -> None:
+    """An invocation for a READY document must not mutate chunks or state."""
+    doc = make_document(status=ProcessingStatus.READY)
+    service, _store, events, repo = make_service(doc)
+
+    with pytest.raises(ConflictError, match=r"The document is not ready for extraction\."):
+        await service.process_document(doc.id)
+
+    assert repo.document.processing_status is ProcessingStatus.READY
+    assert repo.chunks == []
+    assert events.events == []
+
+
+async def test_invocation_for_quarantined_document_does_not_mutate() -> None:
+    """An invocation for a QUARANTINED document must not mutate chunks or state."""
+    doc = make_document(status=ProcessingStatus.QUARANTINED)
+    service, _store, events, repo = make_service(doc)
+
+    with pytest.raises(ConflictError, match=r"The document is not ready for extraction\."):
+        await service.process_document(doc.id)
+
+    assert repo.document.processing_status is ProcessingStatus.QUARANTINED
+    assert repo.chunks == []
+    assert events.events == []
+
+
+async def test_explicit_reset_to_queued_allows_reclaim_and_processing() -> None:
+    """An explicit reset of a FAILED document to QUEUED allows it to be claimed and processed."""
+    doc = make_document(status=ProcessingStatus.FAILED)
+    vector_store = InMemoryVectorStore()
+    embeddings = MockEmbeddingProvider()
+
+    service, store, events, repo = make_service(
+        doc,
+        vector_store=vector_store,
+        embedding_provider=embeddings,
+    )
+
+    await store.put_object(
+        key=doc.storage_key,
+        body=b"Updated policy text for reprocessing.",
+        content_type="text/plain",
+    )
+
+    # Before reset: invocation fails with ConflictError
+    with pytest.raises(ConflictError):
+        await service.process_document(doc.id)
+
+    # Deliberate reset operation returning document to QUEUED
+    repo.document = repo.document.model_copy(
+        update={"processing_status": ProcessingStatus.QUEUED, "processing_error": None}
+    )
+
+    # After reset: claim succeeds and document reaches READY
+    await service.process_document(doc.id)
+    assert repo.document.processing_status is ProcessingStatus.READY
+    assert len(repo.chunks) == 1
+    assert any(e.event_type == "DocumentIndexed" for e in events.events)

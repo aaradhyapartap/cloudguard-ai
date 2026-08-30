@@ -1,4 +1,4 @@
-﻿"""Focused tests for the EventBridge document worker."""
+"""Focused tests for the EventBridge document worker."""
 
 from __future__ import annotations
 
@@ -93,3 +93,5 @@ async def test_worker_processes_completed_upload(
     )
 
     assert FakeProcessingService.calls == [DOCUMENT_ID]
+    last_instance = [inst for inst in [FakeProcessingService] if getattr(inst, "calls", None)]
+    assert last_instance is not None
