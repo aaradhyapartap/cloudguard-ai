@@ -112,7 +112,16 @@ def _build_llm(settings: Settings) -> LLMProvider:
         case "recorded":
             raise AdapterNotAvailableError("LLMProvider", "recorded", "Phase 4")
         case "bedrock":
-            raise AdapterNotAvailableError("LLMProvider", "bedrock", "Phase 5")
+            from app.adapters.bedrock.llm import BedrockLLMProvider
+
+            return BedrockLLMProvider(
+                chat_model_id=settings.bedrock.chat_model,
+                region=settings.aws.region,
+                endpoint_url=settings.aws.endpoint_url,
+                guardrail_id=settings.bedrock.guardrail_id,
+                guardrail_version=settings.bedrock.guardrail_version,
+                max_output_tokens=settings.bedrock.max_output_tokens,
+            )
 
 
 def _build_vector_store(settings: Settings | WorkerSettings) -> VectorStore:

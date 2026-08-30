@@ -27,15 +27,17 @@ def test_s3_vectors_is_deferred_to_phase_11() -> None:
         build_container(Settings(vector_store="s3_vectors"))
 
 
-def test_deployed_container_binds_bedrock_embedding_and_defers_chat_to_phase_5() -> None:
+def test_deployed_container_binds_bedrock_llm_and_embeddings() -> None:
     settings = Settings(
         llm_provider="bedrock",
         environment=Environment.DEV,
         identity_provider="cognito",
         cognito={"user_pool_id": "us-east-1_mock", "client_id": "mock_client"},
     )
-    with pytest.raises(AdapterNotAvailableError, match="Phase 5"):
-        build_container(settings)
+    container = build_container(settings)
+    assert isinstance(container.embeddings, BedrockEmbeddingProvider)
+    assert isinstance(container.llm, LLMProvider)
+    assert container.llm.chat_model_id == settings.bedrock.chat_model
 
 
 def test_worker_container_binds_all_required_ports() -> None:
