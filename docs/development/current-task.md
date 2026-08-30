@@ -48,8 +48,9 @@ Phase 5 final validation:
 
 - Ruff: passed (0 errors)
 - mypy: passed (85 source files)
-- backend tests: 549 passed with tenant RLS role `cloudguard_app`
+- backend tests: 557 passed with tenant RLS role `cloudguard_app`
 - infrastructure tests: 21 passed
+- total automated tests: 578 passed
 - full validation script (`validate-all.ps1`): passed
 - git diff --check: passed
 
