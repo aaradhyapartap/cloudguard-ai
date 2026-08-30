@@ -335,6 +335,20 @@ def upgrade() -> None:
         "evidence_references",
         ["organization_id", "document_id"],
     )
+    op.create_index(
+        "uq_evidence_references_control_doc_chunk",
+        "evidence_references",
+        ["organization_id", "control_assessment_id", "document_id", "chunk_id"],
+        unique=True,
+        postgresql_where=sa.text("chunk_id IS NOT NULL"),
+    )
+    op.create_index(
+        "uq_evidence_references_control_doc_nochunk",
+        "evidence_references",
+        ["organization_id", "control_assessment_id", "document_id"],
+        unique=True,
+        postgresql_where=sa.text("chunk_id IS NULL"),
+    )
 
     # 7. Tenant Assessment Score Snapshots (Immutable History)
     op.create_table(

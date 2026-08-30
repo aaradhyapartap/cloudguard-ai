@@ -29,6 +29,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ENUM, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -362,6 +363,23 @@ class EvidenceReference(Base):
             "control_assessment_id",
         ),
         Index("ix_evidence_references_org_document", "organization_id", "document_id"),
+        Index(
+            "uq_evidence_references_control_doc_chunk",
+            "organization_id",
+            "control_assessment_id",
+            "document_id",
+            "chunk_id",
+            unique=True,
+            postgresql_where=text("chunk_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_evidence_references_control_doc_nochunk",
+            "organization_id",
+            "control_assessment_id",
+            "document_id",
+            unique=True,
+            postgresql_where=text("chunk_id IS NULL"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
