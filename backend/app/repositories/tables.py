@@ -1,10 +1,8 @@
 """ORM tables.
 
 Phase 1 defines only what the foundation needs: Organization, User, Document.
-Phase 3 extends Document and adds DocumentChunk; Phase 5 adds Finding and Risk.
-They are added when the phase that uses them arrives — an unused table is a
-migration you have to maintain for a feature that may change shape before it
-exists.
+Phase 3 extends Document and adds DocumentChunk; Phase 5 adds Compliance Frameworks,
+Controls, Assessments, EvidenceReferences, and AssessmentScoreSnapshots.
 
 Two conventions applied to every tenant-owned table:
 
@@ -24,7 +22,9 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -34,7 +34,15 @@ from sqlalchemy.dialects.postgresql import ENUM, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.enums import ConfidentialityLevel, DocumentType, ProcessingStatus, Role
+from app.models.enums import (
+    AssessmentStatus,
+    ConfidentialityLevel,
+    ControlStatus,
+    DocumentType,
+    ProcessingStatus,
+    RiskClassification,
+    Role,
+)
 from app.repositories.database import Base
 
 
@@ -94,6 +102,7 @@ class User(Base):
 class Document(Base):
     __tablename__ = "documents"
     __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_documents_org_id"),
         Index("ix_documents_org_status", "organization_id", "processing_status"),
         Index("ix_documents_org_type", "organization_id", "document_type"),
         Index("ix_documents_org_created", "organization_id", "created_at"),
@@ -141,6 +150,7 @@ class Document(Base):
 class DocumentChunk(Base):
     __tablename__ = "document_chunks"
     __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_document_chunks_org_id"),
         UniqueConstraint(
             "document_id",
             "chunk_index",
@@ -188,3 +198,244 @@ class DocumentChunk(Base):
         server_default=func.now(),
         nullable=False,
     )
+
+
+# -----------------------------------------------------------------------------
+# Phase 5: Compliance Frameworks, Controls, Assessments & Scoring
+# -----------------------------------------------------------------------------
+
+
+class ComplianceFramework(Base):
+    __tablename__ = "compliance_frameworks"
+    __table_args__ = (
+        UniqueConstraint("code", "version", name="uq_compliance_frameworks_code_version"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    code: Mapped[str] = mapped_column(String(80), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    version: Mapped[str] = mapped_column(String(40), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ComplianceControl(Base):
+    __tablename__ = "compliance_controls"
+    __table_args__ = (
+        UniqueConstraint(
+            "framework_id",
+            "control_code",
+            name="uq_compliance_controls_framework_code",
+        ),
+        Index("ix_compliance_controls_framework_id", "framework_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    framework_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("compliance_frameworks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    control_code: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    category: Mapped[str] = mapped_column(String(120), nullable=False, server_default="")
+    default_weight: Mapped[float] = mapped_column(
+        Numeric(3, 1), nullable=False, server_default="1.0"
+    )
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ComplianceAssessment(Base):
+    __tablename__ = "compliance_assessments"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_compliance_assessments_org_id"),
+        Index("ix_compliance_assessments_org_status", "organization_id", "status"),
+        Index("ix_compliance_assessments_org_framework", "organization_id", "framework_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    framework_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("compliance_frameworks.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    status: Mapped[AssessmentStatus] = mapped_column(
+        _pg_enum(AssessmentStatus, "assessment_status"),
+        nullable=False,
+        server_default=AssessmentStatus.DRAFT.value,
+    )
+    overall_score: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    risk_classification: Mapped[RiskClassification] = mapped_column(
+        _pg_enum(RiskClassification, "risk_classification"),
+        nullable=False,
+        server_default=RiskClassification.NOT_SCORED.value,
+    )
+    scoring_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_by: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ControlAssessment(Base):
+    __tablename__ = "control_assessments"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_control_assessments_org_id"),
+        UniqueConstraint(
+            "assessment_id", "control_id", name="uq_control_assessments_assessment_control"
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "assessment_id"],
+            ["compliance_assessments.organization_id", "compliance_assessments.id"],
+            ondelete="CASCADE",
+            name="fk_control_assessments_assessment_org",
+        ),
+        Index("ix_control_assessments_org_assessment", "organization_id", "assessment_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    assessment_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=False,
+    )
+    control_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("compliance_controls.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    status: Mapped[ControlStatus] = mapped_column(
+        _pg_enum(ControlStatus, "control_status"),
+        nullable=False,
+        server_default=ControlStatus.UNASSESSED.value,
+    )
+    effective_weight: Mapped[float] = mapped_column(
+        Numeric(3, 1), nullable=False, server_default="1.0"
+    )
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class EvidenceReference(Base):
+    __tablename__ = "evidence_references"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "control_assessment_id"],
+            ["control_assessments.organization_id", "control_assessments.id"],
+            ondelete="CASCADE",
+            name="fk_evidence_references_control_assessment_org",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "document_id"],
+            ["documents.organization_id", "documents.id"],
+            ondelete="CASCADE",
+            name="fk_evidence_references_document_org",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "chunk_id"],
+            ["document_chunks.organization_id", "document_chunks.id"],
+            ondelete="SET NULL (chunk_id)",
+            name="fk_evidence_references_chunk_org",
+        ),
+        Index(
+            "ix_evidence_references_org_control",
+            "organization_id",
+            "control_assessment_id",
+        ),
+        Index("ix_evidence_references_org_document", "organization_id", "document_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    control_assessment_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=False,
+    )
+    document_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=False,
+    )
+    chunk_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=True,
+    )
+    confidentiality_level: Mapped[ConfidentialityLevel] = mapped_column(
+        _pg_enum(ConfidentialityLevel, "confidentiality_level"),
+        nullable=False,
+        server_default=ConfidentialityLevel.INTERNAL.value,
+    )
+    snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+
+
+class AssessmentScoreSnapshot(Base):
+    __tablename__ = "assessment_score_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "assessment_id",
+            "revision_number",
+            name="uq_assessment_score_snapshots_assessment_rev",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "assessment_id"],
+            ["compliance_assessments.organization_id", "compliance_assessments.id"],
+            ondelete="CASCADE",
+            name="fk_assessment_score_snapshots_assessment_org",
+        ),
+        Index(
+            "ix_assessment_score_snapshots_org_assessment",
+            "organization_id",
+            "assessment_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    assessment_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=False,
+    )
+    revision_number: Mapped[int] = mapped_column(nullable=False, server_default="1")
+    scoring_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    framework_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    input_snapshot: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, server_default="{}"
+    )
+    raw_scores: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, server_default="{}"
+    )
+    overall_score: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    risk_classification: Mapped[RiskClassification] = mapped_column(
+        _pg_enum(RiskClassification, "risk_classification"),
+        nullable=False,
+    )
+    computed_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    computed_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)

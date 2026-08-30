@@ -38,6 +38,7 @@ class Permission(StrEnum):
     RISK_READ = "risk:read"
     RISK_REVIEW = "risk:review"
     RISK_MODIFY_SEVERITY = "risk:modify_severity"
+    COMPLIANCE_CREATE = "compliance:create"
 
     # Investigations
     INVESTIGATION_CREATE = "investigation:create"
@@ -64,6 +65,7 @@ _ANALYST: frozenset[Permission] = frozenset(
         Permission.DOCUMENT_READ,
         Permission.AI_QUERY,
         Permission.RISK_READ,
+        Permission.COMPLIANCE_CREATE,
         Permission.INVESTIGATION_CREATE,
         Permission.INVESTIGATION_READ,
         Permission.ANALYTICS_READ_OWN,

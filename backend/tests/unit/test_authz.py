@@ -26,6 +26,7 @@ EXPECTED: dict[Role, set[Permission]] = {
         Permission.DOCUMENT_READ,
         Permission.AI_QUERY,
         Permission.RISK_READ,
+        Permission.COMPLIANCE_CREATE,
         Permission.INVESTIGATION_CREATE,
         Permission.INVESTIGATION_READ,
         Permission.ANALYTICS_READ_OWN,
@@ -35,6 +36,7 @@ EXPECTED: dict[Role, set[Permission]] = {
         Permission.DOCUMENT_READ,
         Permission.AI_QUERY,
         Permission.RISK_READ,
+        Permission.COMPLIANCE_CREATE,
         Permission.RISK_REVIEW,
         Permission.RISK_MODIFY_SEVERITY,
         Permission.INVESTIGATION_CREATE,
@@ -88,6 +90,20 @@ def test_admin_cannot_decide_approvals(admin: Principal) -> None:
 
 def test_manager_can_decide_approvals(manager: Principal) -> None:
     require_permission(manager, Permission.APPROVAL_DECIDE)
+
+
+def test_analyst_can_create_compliance(analyst: Principal) -> None:
+    require_permission(analyst, Permission.COMPLIANCE_CREATE)
+
+
+def test_manager_can_create_compliance(manager: Principal) -> None:
+    require_permission(manager, Permission.COMPLIANCE_CREATE)
+
+
+def test_admin_cannot_create_compliance(admin: Principal) -> None:
+    """Segregation of duties: platform admin cannot author compliance assessments."""
+    with pytest.raises(AuthorizationError):
+        require_permission(admin, Permission.COMPLIANCE_CREATE)
 
 
 def test_cross_organization_access_is_refused(analyst: Principal) -> None:

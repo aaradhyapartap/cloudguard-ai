@@ -51,10 +51,26 @@ class ProcessingStatus(StrEnum):
 
 
 class RiskClassification(StrEnum):
-    CRITICAL = "critical"
-    HIGH = "high"
-    MEDIUM = "medium"
+    NOT_SCORED = "not_scored"
     LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class ControlStatus(StrEnum):
+    SATISFIED = "satisfied"
+    PARTIALLY_SATISFIED = "partially_satisfied"
+    DEFICIENT = "deficient"
+    UNASSESSED = "unassessed"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class AssessmentStatus(StrEnum):
+    DRAFT = "draft"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    ARCHIVED = "archived"
 
 
 class InvestigationStatus(StrEnum):
