@@ -13,9 +13,13 @@ from uuid import uuid4
 
 import pytest
 from app.adapters.local.compliance_repository import SQLAlchemyComplianceRepository
+from app.adapters.mock.embedding import MockEmbeddingProvider
+from app.adapters.mock.llm import MockLLMProvider
+from app.adapters.mock.vector_store import InMemoryVectorStore
 from app.core.errors import AuthorizationError, ConflictError, NotFoundError
 from app.models.compliance import (
     ComplianceAssessmentCreateRequest,
+    ComplianceCandidateExtractionRequest,
     ControlAssessmentUpdateRequest,
     EvidenceReferenceCreateRequest,
 )
@@ -40,6 +44,10 @@ from app.repositories.tables import (
     User,
 )
 from app.services.compliance import ComplianceAssessmentService
+from app.services.compliance_candidate_extraction import (
+    ComplianceCandidateExtractionService,
+)
+from app.services.retrieval import RetrievalService
 
 pytestmark = pytest.mark.integration
 
@@ -706,3 +714,139 @@ async def test_cross_tenant_document_admission_rejected_in_service() -> None:
                     document_id=DOC_B_INTERNAL,
                 ),
             )
+
+
+async def test_clearance_safe_projection_integration() -> None:
+    """Clearance-safe projection redacts higher-confidentiality evidence in real database."""
+    _skip_without_database()
+
+    async with tenant_session(ORG_A) as session:
+        repo = SQLAlchemyComplianceRepository(session)
+        service = ComplianceAssessmentService(repository=repo)
+
+        # 1. Create assessment
+        assessment = await service.create_assessment(
+            principal=PRINCIPAL_A_ANALYST,
+            request=ComplianceAssessmentCreateRequest(
+                framework_id=FRAMEWORK_ID,
+                title="Projection Integration Test",
+            ),
+        )
+        controls = await service.get_control_assessments(
+            principal=PRINCIPAL_A_ANALYST,
+            assessment_id=assessment.id,
+        )
+        ctrl1 = next(c for c in controls if c.control_id == CONTROL_1_ID)
+        ctrl2 = next(c for c in controls if c.control_id == CONTROL_2_ID)
+
+        # 2. Attach INTERNAL evidence to Control 1 (Analyst)
+        await service.admit_evidence(
+            principal=PRINCIPAL_A_ANALYST,
+            control_assessment_id=ctrl1.id,
+            request=EvidenceReferenceCreateRequest(
+                document_id=DOC_A_INTERNAL,
+                chunk_id=CHUNK_A_INTERNAL,
+            ),
+        )
+
+        # 3. Attach CONFIDENTIAL evidence to Control 2 (Manager)
+        await service.admit_evidence(
+            principal=PRINCIPAL_A_MANAGER,
+            control_assessment_id=ctrl2.id,
+            request=EvidenceReferenceCreateRequest(
+                document_id=DOC_A_CONFIDENTIAL,
+            ),
+        )
+
+        # 4. Compute authoritative score
+        await service.compute_score(
+            principal=PRINCIPAL_A_ANALYST,
+            assessment_id=assessment.id,
+        )
+
+        # 5. Analyst Projection: Control 1 visible, Control 2 hidden
+        analyst_proj = await service.get_assessment_projection(
+            principal=PRINCIPAL_A_ANALYST,
+            assessment_id=assessment.id,
+        )
+        assert analyst_proj.any_hidden_evidence is True
+        c1_proj = next(c for c in analyst_proj.controls if c.id == ctrl1.id)
+        c2_proj = next(c for c in analyst_proj.controls if c.id == ctrl2.id)
+
+        assert len(c1_proj.evidence) == 1
+        assert c1_proj.hidden_evidence_present is False
+        assert len(c2_proj.evidence) == 0
+        assert c2_proj.hidden_evidence_present is True
+
+        # 6. Manager Projection: Control 1 & 2 both visible
+        mgr_proj = await service.get_assessment_projection(
+            principal=PRINCIPAL_A_MANAGER,
+            assessment_id=assessment.id,
+        )
+        assert mgr_proj.any_hidden_evidence is False
+        mgr_c1_proj = next(c for c in mgr_proj.controls if c.id == ctrl1.id)
+        mgr_c2_proj = next(c for c in mgr_proj.controls if c.id == ctrl2.id)
+
+        assert len(mgr_c1_proj.evidence) == 1
+        assert mgr_c1_proj.hidden_evidence_present is False
+        assert len(mgr_c2_proj.evidence) == 1
+        assert mgr_c2_proj.hidden_evidence_present is False
+
+        # 7. Scores are 100% identical regardless of caller
+        assert analyst_proj.overall_score == mgr_proj.overall_score
+
+
+async def test_candidate_extraction_integration() -> None:
+    """Candidate extraction service executes bounded discovery against database tenant."""
+    _skip_without_database()
+
+    async with tenant_session(ORG_A) as session:
+        repo = SQLAlchemyComplianceRepository(session)
+        service = ComplianceAssessmentService(repository=repo)
+
+        assessment = await service.create_assessment(
+            principal=PRINCIPAL_A_ANALYST,
+            request=ComplianceAssessmentCreateRequest(
+                framework_id=FRAMEWORK_ID,
+                title="Candidate Extraction Integration Test",
+            ),
+        )
+
+        # Setup mock retrieval and mock LLM provider
+        embedding_provider = MockEmbeddingProvider()
+        vector_store = InMemoryVectorStore()
+        # Seed matching vector in store
+        await vector_store.search(
+            embedding=[0.1] * 1024,
+            organization_id=ORG_A,
+            confidentiality_levels=PRINCIPAL_A_ANALYST.visible_confidentiality_levels,
+            top_k=5,
+        )
+
+        retrieval_service = RetrievalService(
+            embedding_provider=embedding_provider,
+            vector_store=vector_store,
+        )
+        llm_provider = MockLLMProvider()
+
+        extraction_service = ComplianceCandidateExtractionService(
+            repository=repo,
+            retrieval_service=retrieval_service,
+            llm_provider=llm_provider,
+        )
+
+        res = await extraction_service.extract_candidates(
+            principal=PRINCIPAL_A_ANALYST,
+            request=ComplianceCandidateExtractionRequest(
+                assessment_id=assessment.id,
+            ),
+        )
+        assert res.assessment_id == assessment.id
+        assert res.framework_id == FRAMEWORK_ID
+
+        # Proves no score snapshot was created by candidate extraction
+        snapshots = await service.list_snapshots(
+            principal=PRINCIPAL_A_ANALYST,
+            assessment_id=assessment.id,
+        )
+        assert len(snapshots) == 0

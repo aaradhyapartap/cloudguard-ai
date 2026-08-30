@@ -17,12 +17,15 @@ from app.models.compliance import (
     AssessmentScoreSnapshotResponse,
     AssessmentScoringInput,
     ComplianceAssessmentCreateRequest,
+    ComplianceAssessmentProjection,
     ComplianceAssessmentResponse,
+    ControlAssessmentProjection,
     ControlAssessmentResponse,
     ControlAssessmentUpdateRequest,
     ControlScoringInput,
     EvidenceReferenceCreateRequest,
     EvidenceReferenceResponse,
+    VisibleEvidenceReference,
 )
 from app.models.enums import AssessmentStatus
 from app.models.principal import Principal
@@ -436,4 +439,149 @@ class ComplianceAssessmentService:
         return await self._repo.list_snapshots(
             organization_id=principal.organization_id,
             assessment_id=assessment_id,
+        )
+
+    async def get_assessment_projection(
+        self,
+        *,
+        principal: Principal,
+        assessment_id: UUID,
+    ) -> ComplianceAssessmentProjection:
+        """Fetch a clearance-safe projection of a compliance assessment.
+
+        Preserves authoritative mathematical scores (which are actor-independent) while
+        redacting any evidence that exceeds the caller's clearance ceiling. If any
+        evidence is omitted, ``hidden_evidence_present`` is set to True on that control,
+        without leaking any metadata, IDs, counts, or snippets of the hidden evidence.
+        """
+        require_permission(principal, Permission.RISK_READ)
+
+        assessment = await self.get_assessment(
+            principal=principal, assessment_id=assessment_id
+        )
+        control_assessments = await self._repo.get_control_assessments(
+            organization_id=principal.organization_id,
+            assessment_id=assessment_id,
+        )
+        evidence_refs = await self._repo.get_evidence_references_for_assessment(
+            organization_id=principal.organization_id,
+            assessment_id=assessment_id,
+        )
+
+        evidence_by_control: dict[UUID, list[EvidenceReferenceResponse]] = {
+            ca.id: [] for ca in control_assessments
+        }
+        for ev in evidence_refs:
+            if ev.control_assessment_id in evidence_by_control:
+                evidence_by_control[ev.control_assessment_id].append(ev)
+
+        control_projections: list[ControlAssessmentProjection] = []
+        for ca in control_assessments:
+            all_evs = evidence_by_control.get(ca.id, [])
+            visible_evs: list[VisibleEvidenceReference] = []
+            hidden_count = 0
+            for ev in all_evs:
+                if principal.can_read(ev.confidentiality_level):
+                    visible_evs.append(
+                        VisibleEvidenceReference(
+                            id=ev.id,
+                            control_assessment_id=ev.control_assessment_id,
+                            document_id=ev.document_id,
+                            chunk_id=ev.chunk_id,
+                            confidentiality_level=ev.confidentiality_level,
+                            snippet=ev.snippet,
+                            created_by=ev.created_by,
+                            created_at=ev.created_at,
+                        )
+                    )
+                else:
+                    hidden_count += 1
+
+            control_projections.append(
+                ControlAssessmentProjection(
+                    id=ca.id,
+                    organization_id=ca.organization_id,
+                    assessment_id=ca.assessment_id,
+                    control_id=ca.control_id,
+                    status=ca.status,
+                    effective_weight=ca.effective_weight,
+                    rationale=ca.rationale,
+                    created_at=ca.created_at,
+                    updated_at=ca.updated_at,
+                    evidence=visible_evs,
+                    hidden_evidence_present=hidden_count > 0,
+                )
+            )
+
+        return ComplianceAssessmentProjection(
+            id=assessment.id,
+            organization_id=assessment.organization_id,
+            framework_id=assessment.framework_id,
+            title=assessment.title,
+            status=assessment.status,
+            overall_score=assessment.overall_score,
+            risk_classification=assessment.risk_classification,
+            scoring_version=assessment.scoring_version,
+            created_by=assessment.created_by,
+            created_at=assessment.created_at,
+            updated_at=assessment.updated_at,
+            controls=control_projections,
+            any_hidden_evidence=any(c.hidden_evidence_present for c in control_projections),
+        )
+
+    async def get_control_assessment_projection(
+        self,
+        *,
+        principal: Principal,
+        control_assessment_id: UUID,
+    ) -> ControlAssessmentProjection:
+        """Fetch a clearance-safe projection for a single control assessment."""
+        require_permission(principal, Permission.RISK_READ)
+
+        ca = await self._repo.get_control_assessment(
+            organization_id=principal.organization_id,
+            control_assessment_id=control_assessment_id,
+        )
+        if ca is None:
+            raise NotFoundError("The requested control assessment does not exist.")
+
+        # Enforce parent assessment tenant existence
+        await self.get_assessment(principal=principal, assessment_id=ca.assessment_id)
+
+        evidence_refs = await self._repo.get_evidence_references_for_control(
+            organization_id=principal.organization_id,
+            control_assessment_id=control_assessment_id,
+        )
+
+        visible_evs: list[VisibleEvidenceReference] = []
+        hidden_count = 0
+        for ev in evidence_refs:
+            if principal.can_read(ev.confidentiality_level):
+                visible_evs.append(
+                    VisibleEvidenceReference(
+                        id=ev.id,
+                        control_assessment_id=ev.control_assessment_id,
+                        document_id=ev.document_id,
+                        chunk_id=ev.chunk_id,
+                        confidentiality_level=ev.confidentiality_level,
+                        snippet=ev.snippet,
+                        created_by=ev.created_by,
+                        created_at=ev.created_at,
+                    )
+                )
+            else:
+                hidden_count += 1
+
+        return ControlAssessmentProjection(
+            id=ca.id,
+            organization_id=ca.organization_id,
+            assessment_id=ca.assessment_id,
+            control_id=ca.control_id,
+            status=ca.status,
+            effective_weight=ca.effective_weight,
+            rationale=ca.rationale,
+            created_at=ca.created_at,
+            updated_at=ca.updated_at,
+            evidence=visible_evs,
+            hidden_evidence_present=hidden_count > 0,
         )
