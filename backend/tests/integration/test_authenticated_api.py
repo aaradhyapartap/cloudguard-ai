@@ -72,6 +72,11 @@ ROUTE_MATRIX: dict[tuple[str, str], dict[Role, int]] = {
         Role.MANAGER: 404,
         Role.ADMIN: 404,
     },
+    ("POST", "/api/v1/retrieval/search"): {
+        Role.ANALYST: 200,
+        Role.MANAGER: 200,
+        Role.ADMIN: 200,
+    },
 }
 
 
@@ -115,6 +120,13 @@ def test_route_protection_matrix(
             request_path,
             headers=headers,
             json=DOCUMENT_CREATE_BODY,
+        )
+    elif method == "POST" and path == "/api/v1/retrieval/search":
+        response = client.request(
+            method,
+            request_path,
+            headers=headers,
+            json={"query": "test compliance search", "top_k": 5},
         )
     else:
         response = client.request(

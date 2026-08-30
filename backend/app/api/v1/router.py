@@ -15,7 +15,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.adapters.local.identity import LocalIdentityProvider
-from app.api.v1 import auth, documents, health, system
+from app.api.v1 import auth, documents, health, retrieval, system
 from app.core.container import Container
 
 
@@ -25,6 +25,7 @@ def build_api_router(container: Container) -> APIRouter:
     router.include_router(system.router)
     router.include_router(auth.router)
     router.include_router(documents.router)
+    router.include_router(retrieval.router)
 
     if isinstance(container.identity, LocalIdentityProvider):
         router.include_router(auth.build_dev_login_router(container.identity))
