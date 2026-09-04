@@ -74,10 +74,9 @@ class RiskAgentRequest(BaseModel):
 class RiskAgentResult(BaseModel):
     """Validated advisory estimates produced by the bounded Risk Agent."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
-    estimates: list[RiskEvidenceEstimate]
-    evidence_count: int = Field(ge=0)
-
-    model_id: str
+    estimates: list[RiskEvidenceEstimate] = Field(default_factory=list, max_length=10)
+    evidence_count: int = Field(ge=0, le=10)
+    model_id: str = Field(min_length=1, max_length=256)
     usage: TokenUsage

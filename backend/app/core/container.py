@@ -28,9 +28,11 @@ from app.adapters.mock.event_publisher import InMemoryEventPublisher
 from app.adapters.mock.llm import MockLLMProvider
 from app.adapters.mock.vector_store import InMemoryVectorStore
 from app.core.config import (
+    AgentWorkerSettings,
     Environment,
     Settings,
     WorkerSettings,
+    get_agent_worker_settings,
     get_settings,
     get_worker_settings,
 )
@@ -89,7 +91,9 @@ def _build_identity(settings: Settings) -> IdentityProvider:
             raise ValueError(f"Unknown identity provider: {settings.identity_provider}")
 
 
-def _build_embeddings(settings: Settings | WorkerSettings) -> EmbeddingProvider:
+def _build_embeddings(
+    settings: Settings | WorkerSettings | AgentWorkerSettings,
+) -> EmbeddingProvider:
     match settings.llm_provider:
         case "mock":
             return MockEmbeddingProvider(dimensions=settings.bedrock.embedding_dimensions)
@@ -106,7 +110,7 @@ def _build_embeddings(settings: Settings | WorkerSettings) -> EmbeddingProvider:
             )
 
 
-def _build_llm(settings: Settings) -> LLMProvider:
+def _build_llm(settings: Settings | AgentWorkerSettings) -> LLMProvider:
     match settings.llm_provider:
         case "mock":
             return MockLLMProvider()
@@ -125,7 +129,7 @@ def _build_llm(settings: Settings) -> LLMProvider:
             )
 
 
-def _build_reviewer_llm(settings: Settings) -> LLMProvider:
+def _build_reviewer_llm(settings: Settings | AgentWorkerSettings) -> LLMProvider:
     """Build the independently configured Reviewer/Judge model provider."""
     match settings.llm_provider:
         case "mock":
@@ -145,7 +149,7 @@ def _build_reviewer_llm(settings: Settings) -> LLMProvider:
             )
 
 
-def _build_vector_store(settings: Settings | WorkerSettings) -> VectorStore:
+def _build_vector_store(settings: Settings | WorkerSettings | AgentWorkerSettings) -> VectorStore:
     match settings.vector_store:
         case "memory":
             return InMemoryVectorStore()
@@ -258,3 +262,63 @@ def build_worker_container(
         embedding_provider=resolved.llm_provider,
     )
     return container
+
+@dataclass(frozen=True, slots=True)
+class ResearchAgentWorkerContainer:
+    """Dependencies required only by the deployed Research Agent."""
+
+    settings: AgentWorkerSettings
+    llm: LLMProvider
+    embeddings: EmbeddingProvider
+    vectors: VectorStore
+
+
+@dataclass(frozen=True, slots=True)
+class RiskAgentWorkerContainer:
+    """Dependencies required only by the deployed Risk Agent."""
+
+    settings: AgentWorkerSettings
+    llm: LLMProvider
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewerAgentWorkerContainer:
+    """Dependencies required only by the deployed Reviewer Agent."""
+
+    settings: AgentWorkerSettings
+    reviewer_llm: LLMProvider
+
+
+def build_research_agent_worker_container(
+    settings: AgentWorkerSettings | None = None,
+) -> ResearchAgentWorkerContainer:
+    """Build the least-privilege dependency graph for Research."""
+    resolved = settings or get_agent_worker_settings()
+    return ResearchAgentWorkerContainer(
+        settings=resolved,
+        llm=_build_llm(resolved),
+        embeddings=_build_embeddings(resolved),
+        vectors=_build_vector_store(resolved),
+    )
+
+
+def build_risk_agent_worker_container(
+    settings: AgentWorkerSettings | None = None,
+) -> RiskAgentWorkerContainer:
+    """Build the least-privilege dependency graph for Risk."""
+    resolved = settings or get_agent_worker_settings()
+    return RiskAgentWorkerContainer(
+        settings=resolved,
+        llm=_build_llm(resolved),
+    )
+
+
+def build_reviewer_agent_worker_container(
+    settings: AgentWorkerSettings | None = None,
+) -> ReviewerAgentWorkerContainer:
+    """Build the least-privilege dependency graph for Reviewer."""
+    resolved = settings or get_agent_worker_settings()
+    return ReviewerAgentWorkerContainer(
+        settings=resolved,
+        reviewer_llm=_build_reviewer_llm(resolved),
+    )

@@ -22,6 +22,7 @@ import os
 
 import aws_cdk as cdk
 
+from stacks.agent_workflow_stack import AgentWorkflowStack
 from stacks.identity_stack import IdentityStack
 from stacks.ingestion_stack import IngestionStack
 
@@ -113,6 +114,32 @@ aurora_secret_arn = (
 )
 event_bus_name = app.node.try_get_context("event_bus_name") or "cloudguard-events"
 
+chat_model_id = (
+    app.node.try_get_context("bedrock_chat_model")
+    or os.getenv("BEDROCK_CHAT_MODEL")
+    or "anthropic.claude-haiku-4-5-20251001-v1:0"
+)
+reviewer_model_id = (
+    app.node.try_get_context("bedrock_judge_model")
+    or os.getenv("BEDROCK_JUDGE_MODEL")
+    or "amazon.nova-pro-v1:0"
+)
+embedding_model_id = (
+    app.node.try_get_context("bedrock_embedding_model")
+    or os.getenv("BEDROCK_EMBEDDING_MODEL")
+    or "amazon.titan-embed-text-v2:0"
+)
+
+agentic_workflows_value = app.node.try_get_context("enable_agentic_workflows")
+if agentic_workflows_value is None:
+    agentic_workflows_value = os.getenv("ENABLE_AGENTIC_WORKFLOWS", "")
+
+agentic_workflows_enabled = str(agentic_workflows_value).lower() in (
+    "true",
+    "1",
+    "yes",
+)
+
 ingestion = IngestionStack(
     app,
     f"CloudGuardIngestion-{environment_name}",
@@ -122,6 +149,20 @@ ingestion = IngestionStack(
     event_bus_name=event_bus_name,
     env=env,
     description="S3 document bucket, Step Functions ingestion workflow, and processing Lambda",
+)
+
+agent_workflow = AgentWorkflowStack(
+    app,
+    f"CloudGuardAgentWorkflow-{environment_name}",
+    environment_name=environment_name,
+    aurora_cluster_arn=aurora_cluster_arn,
+    aurora_secret_arn=aurora_secret_arn,
+    chat_model_id=chat_model_id,
+    reviewer_model_id=reviewer_model_id,
+    embedding_model_id=embedding_model_id,
+    agentic_workflows_enabled=agentic_workflows_enabled,
+    env=env,
+    description="Deterministic Phase 6 Research, Risk, and Reviewer agent workflow",
 )
 
 # Tag everything. Untagged resources are how a student account quietly grows a

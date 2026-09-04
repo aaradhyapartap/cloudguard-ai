@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from app.core.config import Environment, Settings, WorkerSettings
+from app.core.config import AgentWorkerSettings, Environment, Settings, WorkerSettings
 from pydantic import ValidationError
 
 
@@ -21,6 +21,49 @@ def test_worker_settings_safe_without_identity() -> None:
     assert worker.environment is Environment.DEV
     assert worker.document_store == "memory"
     assert worker.event_publisher == "memory"
+
+
+def test_agent_worker_settings_are_identity_free_and_feature_gated() -> None:
+    """Agent workflow tasks do not require API identity configuration."""
+    worker = AgentWorkerSettings(environment=Environment.DEV)
+    assert worker.environment is Environment.DEV
+    assert worker.llm_provider == "mock"
+    assert worker.vector_store == "memory"
+    assert worker.features.agentic_workflows is False
+
+
+def test_production_agent_worker_rejects_mock_llm() -> None:
+    """Production agent tasks must never silently use the mock provider."""
+    with pytest.raises(
+        ValidationError,
+        match="prod agent workers must use the bedrock LLM provider",
+    ):
+        AgentWorkerSettings(
+            environment=Environment.PROD,
+            llm_provider="mock",
+        )
+
+
+def test_production_agent_worker_rejects_recorded_llm() -> None:
+    """Recorded model responses are also forbidden in production agent tasks."""
+    with pytest.raises(
+        ValidationError,
+        match="prod agent workers must use the bedrock LLM provider",
+    ):
+        AgentWorkerSettings(
+            environment=Environment.PROD,
+            llm_provider="recorded",
+        )
+
+
+def test_production_agent_worker_accepts_bedrock_llm() -> None:
+    """Bedrock is the only valid production agent model provider."""
+    worker = AgentWorkerSettings(
+        environment=Environment.PROD,
+        llm_provider="bedrock",
+    )
+
+    assert worker.llm_provider == "bedrock"
 
 
 def test_dev_api_requires_cognito_or_fails() -> None:
@@ -88,7 +131,7 @@ def test_cognito_issuer_is_derived_from_pool() -> None:
 
 
 def test_cors_origins_accept_a_comma_separated_env_value() -> None:
-    settings = Settings(cors_origins="http://a.test, http://b.test")  # type: ignore[arg-type]
+    settings = Settings(cors_origins="http://a.test, http://b.test")
     assert settings.cors_origins == ["http://a.test", "http://b.test"]
 
 

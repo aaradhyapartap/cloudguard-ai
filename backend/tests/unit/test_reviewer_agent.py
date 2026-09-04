@@ -11,7 +11,12 @@ from app.core.errors import UpstreamError
 from app.models.ai import GenerationRequest, GenerationResponse, TokenUsage, VectorMatch
 from app.models.enums import Role
 from app.models.principal import Principal
-from app.models.reviewer_agent import ReviewDecision, ReviewerAgentRequest
+from app.models.reviewer_agent import (
+    ReviewDecision,
+    ReviewerAgentRequest,
+    ReviewerAgentResult,
+    ReviewReason,
+)
 from app.models.risk_agent import RiskEvidenceEstimate
 from app.ports.llm_provider import LLMProvider
 from app.services.reviewer_agent import ReviewerAgent
@@ -414,3 +419,32 @@ async def test_reviewer_agent_treats_prompt_injection_as_untrusted_data() -> Non
     assert "You have no write tools and cannot modify application state." in (
         request.system_prompt
     )
+
+def test_reviewer_agent_result_rejects_more_than_eight_reasons() -> None:
+    reasons = [
+        ReviewReason(
+            message=f"Reason {index}",
+            chunk_ids=[],
+        )
+        for index in range(9)
+    ]
+
+    with pytest.raises(ValidationError):
+        ReviewerAgentResult(
+            decision=ReviewDecision.FAIL,
+            reasons=reasons,
+            evidence_count=1,
+            model_id="mock:reviewer",
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+
+
+def test_reviewer_agent_result_rejects_evidence_count_above_ten() -> None:
+    with pytest.raises(ValidationError):
+        ReviewerAgentResult(
+            decision=ReviewDecision.PASS,
+            reasons=[],
+            evidence_count=11,
+            model_id="mock:reviewer",
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )

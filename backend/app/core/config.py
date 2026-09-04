@@ -263,6 +263,42 @@ class WorkerSettings(BaseSettings):
     bedrock: BedrockSettings = Field(default_factory=BedrockSettings)
 
 
+class AgentWorkerSettings(BaseSettings):
+    """Scoped configuration for deployed Phase 6 agent workflow tasks.
+
+    Agent workers consume an already authenticated Principal from trusted workflow
+    state. They therefore need model, retrieval, and feature-gate configuration,
+    but must not require API identity-provider or Cognito configuration.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=(".env", "../.env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    environment: Environment = Environment.LOCAL
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    log_format: Literal["json", "console"] = "console"
+    llm_provider: Literal["mock", "recorded", "bedrock"] = "mock"
+    vector_store: Literal["memory", "pgvector"] = "memory"
+
+    database: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    aws: AWSSettings = Field(default_factory=AWSSettings)
+    bedrock: BedrockSettings = Field(default_factory=BedrockSettings)
+    features: FeatureFlags = Field(default_factory=FeatureFlags)
+
+    @field_validator("llm_provider")
+    @classmethod
+    def _no_test_llm_in_prod(cls, value: str, info: ValidationInfo) -> str:
+        """Production agent workers must use the real Bedrock provider."""
+        if info.data.get("environment") is Environment.PROD and value != "bedrock":
+            raise ValueError(
+                "prod agent workers must use the bedrock LLM provider, not a test double"
+            )
+        return value
+
+
 @lru_cache
 def get_settings() -> Settings:
     """Cached so the process parses and validates the environment exactly once."""
@@ -273,3 +309,9 @@ def get_settings() -> Settings:
 def get_worker_settings() -> WorkerSettings:
     """Cached configuration for worker tasks."""
     return WorkerSettings()
+
+
+@lru_cache
+def get_agent_worker_settings() -> AgentWorkerSettings:
+    """Cached configuration for deployed agent workflow tasks."""
+    return AgentWorkerSettings()

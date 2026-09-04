@@ -20,7 +20,7 @@ from app.models.compliance import (
 )
 from app.models.enums import ControlStatus, RiskClassification, Role
 from app.models.principal import Principal
-from app.models.risk_agent import RiskAgentRequest
+from app.models.risk_agent import RiskAgentRequest, RiskAgentResult, RiskEvidenceEstimate
 from app.ports.llm_provider import LLMProvider
 from app.services.compliance_scoring import RiskScoringEngine
 from app.services.risk_agent import RiskAgent
@@ -555,4 +555,33 @@ async def test_risk_agent_rejects_coerced_numeric_estimates(
                 question="Assess strict numeric output",
                 evidence=[_evidence()],
             ),
+        )
+
+def test_risk_agent_result_rejects_more_than_ten_estimates() -> None:
+    estimates = [
+        RiskEvidenceEstimate(
+            chunk_id=f"chunk-{index}",
+            likelihood=0.4,
+            impact=0.7,
+            rationale="Grounded estimate.",
+        )
+        for index in range(11)
+    ]
+
+    with pytest.raises(PydanticValidationError):
+        RiskAgentResult(
+            estimates=estimates,
+            evidence_count=10,
+            model_id="mock:risk",
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+
+
+def test_risk_agent_result_rejects_evidence_count_above_ten() -> None:
+    with pytest.raises(PydanticValidationError):
+        RiskAgentResult(
+            estimates=[],
+            evidence_count=11,
+            model_id="mock:risk",
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
         )

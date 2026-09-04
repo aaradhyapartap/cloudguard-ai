@@ -100,10 +100,10 @@ class ReviewerAgentRequest(BaseModel):
 class ReviewerAgentResult(BaseModel):
     """Validated Reviewer decision returned to workflow orchestration."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     decision: ReviewDecision
-    reasons: list[ReviewReason]
-    evidence_count: int = Field(ge=0)
-    model_id: str
+    reasons: list[ReviewReason] = Field(default_factory=list, max_length=8)
+    evidence_count: int = Field(ge=0, le=10)
+    model_id: str = Field(min_length=1, max_length=256)
     usage: TokenUsage

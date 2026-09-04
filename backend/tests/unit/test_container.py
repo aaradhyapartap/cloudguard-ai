@@ -4,8 +4,22 @@ from __future__ import annotations
 
 import pytest
 from app.adapters.bedrock.embedding import BedrockEmbeddingProvider
-from app.core.config import AWSSettings, DatabaseSettings, Environment, Settings, WorkerSettings
-from app.core.container import AdapterNotAvailableError, build_container, build_worker_container
+from app.core.config import (
+    AgentWorkerSettings,
+    AWSSettings,
+    DatabaseSettings,
+    Environment,
+    Settings,
+    WorkerSettings,
+)
+from app.core.container import (
+    AdapterNotAvailableError,
+    build_container,
+    build_research_agent_worker_container,
+    build_reviewer_agent_worker_container,
+    build_risk_agent_worker_container,
+    build_worker_container,
+)
 from app.ports.llm_provider import EmbeddingProvider, LLMProvider
 from app.ports.vector_store import VectorStore
 
@@ -61,3 +75,46 @@ def test_worker_container_binds_all_required_ports() -> None:
     assert isinstance(container.vectors, VectorStore)
     assert container.documents is not None
     assert container.events is not None
+
+def test_research_agent_worker_container_binds_retrieval_dependencies() -> None:
+    settings = AgentWorkerSettings(
+        environment=Environment.DEV,
+        llm_provider="bedrock",
+        vector_store="pgvector",
+        aws=AWSSettings(
+            aurora_cluster_arn="arn:aws:rds:us-east-1:123456789012:cluster:cloudguard-dev",
+            aurora_secret_arn="arn:aws:secretsmanager:us-east-1:123456789012:secret:db-creds",
+        ),
+        database=DatabaseSettings(name="cloudguard"),
+    )
+
+    container = build_research_agent_worker_container(settings)
+
+    assert isinstance(container.llm, LLMProvider)
+    assert container.llm.chat_model_id == settings.bedrock.chat_model
+    assert isinstance(container.embeddings, EmbeddingProvider)
+    assert isinstance(container.vectors, VectorStore)
+
+
+def test_risk_agent_worker_container_binds_only_generator_llm() -> None:
+    settings = AgentWorkerSettings(
+        environment=Environment.DEV,
+        llm_provider="bedrock",
+    )
+
+    container = build_risk_agent_worker_container(settings)
+
+    assert isinstance(container.llm, LLMProvider)
+    assert container.llm.chat_model_id == settings.bedrock.chat_model
+
+
+def test_reviewer_agent_worker_container_binds_only_reviewer_llm() -> None:
+    settings = AgentWorkerSettings(
+        environment=Environment.DEV,
+        llm_provider="bedrock",
+    )
+
+    container = build_reviewer_agent_worker_container(settings)
+
+    assert isinstance(container.reviewer_llm, LLMProvider)
+    assert container.reviewer_llm.chat_model_id == settings.bedrock.judge_model
