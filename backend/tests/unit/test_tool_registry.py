@@ -2,16 +2,36 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from decimal import Decimal
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
 from app.adapters.mock.embedding import MockEmbeddingProvider
 from app.adapters.mock.vector_store import InMemoryVectorStore
-from app.core.errors import AuthorizationError, ValidationError
-from app.models.agents import AgentType, ToolCallRequest, ToolName
+from app.core.errors import AuthorizationError, NotFoundError, ValidationError
+from app.models.agents import (
+    AgentType,
+    PolicyReadResult,
+    ToolCallRequest,
+    ToolName,
+)
 from app.models.ai import VectorRecord
-from app.models.enums import Role
+from app.models.compliance import (
+    ComplianceAssessmentResponse,
+    ComplianceControlRead,
+    ComplianceFrameworkRead,
+)
+from app.models.enums import (
+    AssessmentStatus,
+    RiskClassification,
+    Role,
+)
 from app.models.principal import Principal
+from app.models.retrieval import RetrievalResponse
+from app.ports.compliance_repository import ComplianceRepository
+from app.services.compliance_policy_read import CompliancePolicyReadService
 from app.services.retrieval import RetrievalService
 from app.services.tool_registry import ToolExecutionBudget, ToolRegistry
 
@@ -77,6 +97,7 @@ async def test_research_can_search_documents() -> None:
     )
 
     assert result.tool_name is ToolName.SEARCH_DOCUMENTS
+    assert isinstance(result.result, RetrievalResponse)
     assert result.result.total == 1
     assert result.result.matches[0].chunk_id == "chunk-a"
     assert budget.used_calls == 1
@@ -161,6 +182,7 @@ async def test_original_principal_controls_tenant_scope() -> None:
         ),
     )
 
+    assert isinstance(result.result, RetrievalResponse)
     assert [match.chunk_id for match in result.result.matches] == ["chunk-a"]
     assert budget.used_calls == 1
 
@@ -285,5 +307,257 @@ async def test_original_principal_controls_clearance_scope() -> None:
         ),
     )
 
+    assert isinstance(result.result, RetrievalResponse)
     assert [match.chunk_id for match in result.result.matches] == ["chunk-internal"]
     assert budget.used_calls == 1
+@pytest.mark.asyncio
+async def test_compliance_agent_can_search_documents() -> None:
+    store = InMemoryVectorStore()
+    await store.upsert(
+        [
+            VectorRecord(
+                chunk_id="chunk-compliance",
+                document_id=str(DOC_A),
+                organization_id=str(ORG_A),
+                embedding=[0.0] * 1024,
+                content="Access control policy requires quarterly review.",
+                metadata={"confidentiality_level": "internal"},
+            )
+        ]
+    )
+
+    registry = _registry(store)
+    budget = ToolExecutionBudget(max_calls=1)
+
+    result = await registry.invoke(
+        agent=AgentType.COMPLIANCE,
+        principal=_principal(role=Role.ANALYST),
+        request=ToolCallRequest(
+            tool_name=ToolName.SEARCH_DOCUMENTS,
+            arguments={
+                "query": "access control policy",
+                "top_k": 3,
+            },
+        ),
+        budget=budget,
+    )
+
+    assert result.tool_name is ToolName.SEARCH_DOCUMENTS
+    assert isinstance(result.result, RetrievalResponse)
+    assert result.result.total == 1
+    assert result.result.matches[0].chunk_id == "chunk-compliance"
+    assert budget.used_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_compliance_agent_search_respects_original_principal_tenant() -> None:
+    store = InMemoryVectorStore()
+    await store.upsert(
+        [
+            VectorRecord(
+                chunk_id="chunk-org-a",
+                document_id=str(DOC_A),
+                organization_id=str(ORG_A),
+                embedding=[0.0] * 1024,
+                content="Shared compliance policy",
+                metadata={"confidentiality_level": "internal"},
+            ),
+            VectorRecord(
+                chunk_id="chunk-org-b",
+                document_id=str(DOC_B),
+                organization_id=str(ORG_B),
+                embedding=[0.0] * 1024,
+                content="Shared compliance policy",
+                metadata={"confidentiality_level": "internal"},
+            ),
+        ]
+    )
+
+    registry = _registry(store)
+    budget = ToolExecutionBudget(max_calls=1)
+
+    result = await registry.invoke(
+        agent=AgentType.COMPLIANCE,
+        principal=_principal(
+            organization_id=ORG_A,
+            role=Role.ANALYST,
+        ),
+        request=ToolCallRequest(
+            tool_name=ToolName.SEARCH_DOCUMENTS,
+            arguments={
+                "query": "shared compliance policy",
+                "top_k": 10,
+            },
+        ),
+        budget=budget,
+    )
+
+    assert isinstance(result.result, RetrievalResponse)
+    assert [match.chunk_id for match in result.result.matches] == ["chunk-org-a"]
+    assert budget.used_calls == 1
+@pytest.mark.asyncio
+async def test_compliance_agent_can_get_policy() -> None:
+    repo = AsyncMock(spec=ComplianceRepository)
+    assessment_id = UUID("44444444-4444-4444-8444-444444444444")
+    framework_id = UUID("55555555-5555-4555-8555-555555555555")
+    control_id = UUID("66666666-6666-4666-8666-666666666666")
+
+    repo.get_assessment.return_value = ComplianceAssessmentResponse(
+        id=assessment_id,
+        organization_id=ORG_A,
+        framework_id=framework_id,
+        title="Compliance Assessment",
+        status=AssessmentStatus.IN_PROGRESS,
+        overall_score=Decimal("0.00"),
+        risk_classification=RiskClassification.LOW,
+        scoring_version="v1.0",
+        created_by=USER_ID,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    repo.get_framework.return_value = ComplianceFrameworkRead(
+        id=framework_id,
+        code="SOC2",
+        name="SOC 2",
+        version="2026.1",
+        description="SOC 2 framework",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    repo.get_framework_controls.return_value = [
+        ComplianceControlRead(
+            id=control_id,
+            framework_id=framework_id,
+            control_code="CC6.1",
+            title="Logical Access",
+            description="Logical access controls",
+            category="Security",
+            default_weight=Decimal("3.0"),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+    ]
+
+    registry = ToolRegistry(
+        retrieval_service=RetrievalService(
+            embedding_provider=MockEmbeddingProvider(),
+            vector_store=InMemoryVectorStore(),
+        ),
+        compliance_policy_read_service=CompliancePolicyReadService(
+            repository=repo,
+        ),
+    )
+    budget = ToolExecutionBudget(max_calls=1)
+
+    result = await registry.invoke(
+        agent=AgentType.COMPLIANCE,
+        principal=_principal(),
+        request=ToolCallRequest(
+            tool_name=ToolName.GET_POLICY,
+            arguments={
+                "assessment_id": str(assessment_id),
+                "control_ids": [str(control_id)],
+            },
+        ),
+        budget=budget,
+    )
+
+    assert result.tool_name is ToolName.GET_POLICY
+    assert isinstance(result.result, PolicyReadResult)
+    assert result.result.assessment_id == assessment_id
+    assert result.result.framework.id == framework_id
+    assert [control.id for control in result.result.controls] == [control_id]
+    assert budget.used_calls == 1
+
+    repo.get_assessment.assert_awaited_once_with(
+        organization_id=ORG_A,
+        assessment_id=assessment_id,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "agent",
+    [
+        AgentType.RESEARCH,
+        AgentType.RISK,
+        AgentType.REVIEWER,
+    ],
+)
+async def test_non_compliance_agents_cannot_get_policy(
+    agent: AgentType,
+) -> None:
+    registry = _registry()
+    budget = ToolExecutionBudget(max_calls=1)
+
+    with pytest.raises(AuthorizationError):
+        await registry.invoke(
+            agent=agent,
+            principal=_principal(),
+            request=ToolCallRequest(
+                tool_name=ToolName.GET_POLICY,
+                arguments={
+                    "assessment_id": "44444444-4444-4444-8444-444444444444",
+                },
+            ),
+            budget=budget,
+        )
+
+    assert budget.used_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_get_policy_fails_closed_when_reader_is_not_configured() -> None:
+    registry = _registry()
+    budget = ToolExecutionBudget(max_calls=1)
+
+    with pytest.raises(
+        ValidationError,
+        match="policy-read tool is not configured",
+    ):
+        await registry.invoke(
+            agent=AgentType.COMPLIANCE,
+            principal=_principal(),
+            request=ToolCallRequest(
+                tool_name=ToolName.GET_POLICY,
+                arguments={
+                    "assessment_id": "44444444-4444-4444-8444-444444444444",
+                },
+            ),
+            budget=budget,
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_policy_uses_original_principal_tenant() -> None:
+    repo = AsyncMock(spec=ComplianceRepository)
+    assessment_id = UUID("44444444-4444-4444-8444-444444444444")
+    repo.get_assessment.return_value = None
+
+    registry = ToolRegistry(
+        retrieval_service=RetrievalService(
+            embedding_provider=MockEmbeddingProvider(),
+            vector_store=InMemoryVectorStore(),
+        ),
+        compliance_policy_read_service=CompliancePolicyReadService(
+            repository=repo,
+        ),
+    )
+
+    with pytest.raises(NotFoundError):
+        await registry.invoke(
+            agent=AgentType.COMPLIANCE,
+            principal=_principal(organization_id=ORG_A),
+            request=ToolCallRequest(
+                tool_name=ToolName.GET_POLICY,
+                arguments={
+                    "assessment_id": str(assessment_id),
+                },
+            ),
+            budget=ToolExecutionBudget(max_calls=1),
+        )
+
+    repo.get_assessment.assert_awaited_once_with(
+        organization_id=ORG_A,
+        assessment_id=assessment_id,
+    )

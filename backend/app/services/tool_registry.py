@@ -9,6 +9,7 @@ from pydantic import ValidationError as PydanticValidationError
 from app.core.errors import AuthorizationError, ValidationError
 from app.models.agents import (
     AgentType,
+    GetPolicyArguments,
     SearchDocumentsArguments,
     ToolCallRequest,
     ToolCallResult,
@@ -17,10 +18,17 @@ from app.models.agents import (
 from app.models.principal import Principal
 from app.models.retrieval import RetrievalRequest
 from app.security.authz import Permission, require_permission
+from app.services.compliance_policy_read import CompliancePolicyReadService
 from app.services.retrieval import RetrievalService
 
 _AGENT_ALLOWLISTS: dict[AgentType, frozenset[ToolName]] = {
     AgentType.RESEARCH: frozenset({ToolName.SEARCH_DOCUMENTS}),
+    AgentType.COMPLIANCE: frozenset(
+        {
+            ToolName.SEARCH_DOCUMENTS,
+            ToolName.GET_POLICY,
+        }
+    ),
     AgentType.RISK: frozenset(),
     AgentType.REVIEWER: frozenset(),
 }
@@ -53,8 +61,10 @@ class ToolRegistry:
         self,
         *,
         retrieval_service: RetrievalService,
+        compliance_policy_read_service: CompliancePolicyReadService | None = None,
     ) -> None:
         self._retrieval_service = retrieval_service
+        self._compliance_policy_read_service = compliance_policy_read_service
 
     async def invoke(
         self,
@@ -71,6 +81,11 @@ class ToolRegistry:
 
         if request.tool_name is ToolName.SEARCH_DOCUMENTS:
             result = await self._search_documents(
+                principal=principal,
+                arguments=request.arguments,
+            )
+        elif request.tool_name is ToolName.GET_POLICY:
+            result = await self._get_policy(
                 principal=principal,
                 arguments=request.arguments,
             )
@@ -103,5 +118,31 @@ class ToolRegistry:
 
         return ToolCallResult(
             tool_name=ToolName.SEARCH_DOCUMENTS,
+            result=response,
+        )
+    async def _get_policy(
+        self,
+        *,
+        principal: Principal,
+        arguments: dict[str, object],
+    ) -> ToolCallResult:
+        if self._compliance_policy_read_service is None:
+            raise ValidationError(
+                "The compliance policy-read tool is not configured."
+            )
+
+        try:
+            parsed = GetPolicyArguments.model_validate(arguments)
+        except PydanticValidationError as exc:
+            raise ValidationError("The agent tool arguments are invalid.") from exc
+
+        response = await self._compliance_policy_read_service.get_policy(
+            principal=principal,
+            assessment_id=parsed.assessment_id,
+            control_ids=parsed.control_ids,
+        )
+
+        return ToolCallResult(
+            tool_name=ToolName.GET_POLICY,
             result=response,
         )

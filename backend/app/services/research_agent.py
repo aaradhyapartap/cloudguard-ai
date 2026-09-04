@@ -15,6 +15,7 @@ from app.models.research_agent import (
     ResearchAgentResult,
     ResearchToolIntent,
 )
+from app.models.retrieval import RetrievalResponse
 from app.ports.llm_provider import LLMProvider
 from app.services.tool_registry import ToolExecutionBudget, ToolRegistry
 
@@ -105,6 +106,11 @@ class ResearchAgent:
             request=tool_request,
             budget=budget,
         )
+
+        if not isinstance(tool_result.result, RetrievalResponse):
+            raise UpstreamError(
+                "The research agent received an unexpected tool result."
+            )
 
         return ResearchAgentResult(
             evidence=tool_result.result.matches,

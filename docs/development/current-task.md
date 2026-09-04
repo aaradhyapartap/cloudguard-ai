@@ -254,6 +254,40 @@ Done when:
 - the ToolRegistry rejects an out-of-scope call;
 - local deterministic tests and infrastructure tests cover the graph.
 
+### Phase 6.6 - Bounded Compliance Agent
+
+Deliver:
+
+- bounded Compliance Agent service;
+- Principal-bound `get_policy` and `search_documents` execution through the ToolRegistry;
+- tenant-safe read-only compliance policy boundary;
+- policy/control context bounded to at most 25 controls;
+- evidence retrieval bounded to at most 10 chunks;
+- model-planned search intent with strict schema validation;
+- model evaluation constrained to trusted policy context and trusted retrieved evidence;
+- non-authoritative candidate findings only;
+- no score persistence, finding persistence, notifications, approvals, or remediation;
+- source-label validation against actually retrieved evidence;
+- quote provenance derived only from trusted retrieved chunk content;
+- duplicate-control and unknown-source fail-closed validation;
+- real planning/evaluation model usage telemetry;
+- zero-evidence behavior that skips the evaluation model call;
+- tests proving original tenant and clearance boundaries are preserved.
+
+Compliance remains read-only and non-authoritative.
+
+Done when:
+
+- `get_policy` and `search_documents` are the only Compliance Agent tools;
+- Research, Risk, and Reviewer cannot invoke `get_policy`;
+- policy reads use the original human Principal and tenant-scoped assessment lookup;
+- the model cannot supply organization, role, permission, or clearance identity;
+- the evaluator receives trusted control title/description from the policy boundary;
+- every returned evidence reference maps to retrieved authorized evidence;
+- cross-tenant and higher-clearance evidence cannot enter findings;
+- malformed tool intent, invented source labels, duplicate controls, and invalid output fail closed;
+- no Phase 7 approval/task-token behavior is introduced;
+- focused Compliance and ToolRegistry tests pass.
 ## Security Test Requirements
 
 Phase 6 tests must explicitly cover:
