@@ -61,6 +61,7 @@ class Container:
     settings: Settings
     identity: IdentityProvider
     llm: LLMProvider
+    reviewer_llm: LLMProvider
     embeddings: EmbeddingProvider
     vectors: VectorStore
     documents: DocumentStore
@@ -116,6 +117,26 @@ def _build_llm(settings: Settings) -> LLMProvider:
 
             return BedrockLLMProvider(
                 chat_model_id=settings.bedrock.chat_model,
+                region=settings.aws.region,
+                endpoint_url=settings.aws.endpoint_url,
+                guardrail_id=settings.bedrock.guardrail_id,
+                guardrail_version=settings.bedrock.guardrail_version,
+                max_output_tokens=settings.bedrock.max_output_tokens,
+            )
+
+
+def _build_reviewer_llm(settings: Settings) -> LLMProvider:
+    """Build the independently configured Reviewer/Judge model provider."""
+    match settings.llm_provider:
+        case "mock":
+            return MockLLMProvider()
+        case "recorded":
+            raise AdapterNotAvailableError("LLMProvider", "recorded", "Phase 4")
+        case "bedrock":
+            from app.adapters.bedrock.llm import BedrockLLMProvider
+
+            return BedrockLLMProvider(
+                chat_model_id=settings.bedrock.judge_model,
                 region=settings.aws.region,
                 endpoint_url=settings.aws.endpoint_url,
                 guardrail_id=settings.bedrock.guardrail_id,
@@ -188,6 +209,7 @@ def build_container(settings: Settings | None = None) -> Container:
         settings=resolved,
         identity=_build_identity(resolved),
         llm=_build_llm(resolved),
+        reviewer_llm=_build_reviewer_llm(resolved),
         embeddings=_build_embeddings(resolved),
         vectors=_build_vector_store(resolved),
         documents=_build_document_store(resolved),

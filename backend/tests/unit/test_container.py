@@ -13,6 +13,8 @@ from app.ports.vector_store import VectorStore
 def test_local_defaults_bind_test_doubles(settings: Settings) -> None:
     container = build_container(settings)
     assert isinstance(container.llm, LLMProvider)
+    assert isinstance(container.reviewer_llm, LLMProvider)
+    assert container.reviewer_llm is not container.llm
     assert isinstance(container.embeddings, EmbeddingProvider)
     assert isinstance(container.vectors, VectorStore)
 
@@ -37,7 +39,10 @@ def test_deployed_container_binds_bedrock_llm_and_embeddings() -> None:
     container = build_container(settings)
     assert isinstance(container.embeddings, BedrockEmbeddingProvider)
     assert isinstance(container.llm, LLMProvider)
+    assert isinstance(container.reviewer_llm, LLMProvider)
     assert container.llm.chat_model_id == settings.bedrock.chat_model
+    assert container.reviewer_llm.chat_model_id == settings.bedrock.judge_model
+    assert container.reviewer_llm is not container.llm
 
 
 def test_worker_container_binds_all_required_ports() -> None:
