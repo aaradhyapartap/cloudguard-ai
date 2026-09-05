@@ -53,6 +53,14 @@ def _pending_payload() -> dict[str, object]:
         "score_context": ApprovalScoreContext(
             score=Decimal("72.50"),
             scoring_version="v1.0",
+            component_breakdown={
+                "scoring_version": "v1.0",
+                "total_controls": 4,
+                "applicable_controls": 4,
+                "sum_weights": "4.0",
+                "sum_weighted_scores": "290.0",
+                "critical_override_triggered": False,
+            },
         ),
         "agent_trace_ids": ["research-1", "risk-1", "reviewer-1"],
         "generator_model_id": "mock:generator-v1",
@@ -60,6 +68,67 @@ def _pending_payload() -> dict[str, object]:
         "status": ApprovalStatus.PENDING,
         "created_at": datetime.now(UTC),
     }
+
+
+def test_score_context_preserves_deterministic_component_breakdown() -> None:
+    score_context = ApprovalScoreContext(
+        score=Decimal("72.50"),
+        scoring_version="v1.0",
+        component_breakdown={
+            "scoring_version": "v1.0",
+            "total_controls": 4,
+            "applicable_controls": 4,
+            "sum_weights": "4.0",
+            "sum_weighted_scores": "290.0",
+            "critical_override_triggered": False,
+        },
+    )
+
+    assert score_context.component_breakdown.total_controls == 4
+    assert score_context.component_breakdown.applicable_controls == 4
+    assert score_context.component_breakdown.sum_weights == Decimal("4.0")
+    assert score_context.component_breakdown.sum_weighted_scores == Decimal(
+        "290.0"
+    )
+    assert score_context.component_breakdown.critical_override_triggered is False
+
+
+def test_score_context_rejects_component_scoring_version_mismatch() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="scoring_version must match",
+    ):
+        ApprovalScoreContext(
+            score=Decimal("72.50"),
+            scoring_version="v1.0",
+            component_breakdown={
+                "scoring_version": "v2.0",
+                "total_controls": 4,
+                "applicable_controls": 4,
+                "sum_weights": "4.0",
+                "sum_weighted_scores": "290.0",
+                "critical_override_triggered": False,
+            },
+        )
+
+
+def test_score_breakdown_rejects_applicable_count_above_total() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="cannot exceed total_controls",
+    ):
+        ApprovalScoreContext(
+            score=Decimal("72.50"),
+            scoring_version="v1.0",
+            component_breakdown={
+                "scoring_version": "v1.0",
+                "total_controls": 3,
+                "applicable_controls": 4,
+                "sum_weights": "4.0",
+                "sum_weighted_scores": "290.0",
+                "critical_override_triggered": False,
+            },
+        )
 
 
 def test_pending_approval_accepts_bounded_valid_context() -> None:
@@ -173,7 +242,7 @@ def test_valid_modified_decision_is_accepted() -> None:
     assert decision.modified_action is not None
 
 
-def test_decided_approval_requires_decided_status() -> None:
+def test_decided_approval_rejects_pending_status() -> None:
     payload = {
         **_pending_payload(),
         "status": ApprovalStatus.PENDING,
@@ -182,8 +251,58 @@ def test_decided_approval_requires_decided_status() -> None:
         "decided_at": datetime.now(UTC),
     }
 
-    with pytest.raises(ValidationError, match="must be decided"):
+    with pytest.raises(
+        ValidationError,
+        match="must represent a recorded human decision",
+    ):
         DecidedApproval.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        ApprovalStatus.DECIDED,
+        ApprovalStatus.EXECUTION_SUCCEEDED,
+        ApprovalStatus.EXECUTION_FAILED,
+    ],
+)
+def test_decided_approval_accepts_recorded_decision_lifecycle_status(
+    status: ApprovalStatus,
+) -> None:
+    payload = {
+        **_pending_payload(),
+        "status": status,
+        "decision": ApprovalDecision.APPROVED,
+        "approver_id": MANAGER_ID,
+        "decided_at": datetime.now(UTC),
+    }
+
+    approval = DecidedApproval.model_validate(payload)
+
+    assert approval.status is status
+    assert approval.decision is ApprovalDecision.APPROVED
+
+
+def test_pending_approval_collection_fields_are_immutable_tuples() -> None:
+    approval = PendingApproval.model_validate(_pending_payload())
+
+    assert isinstance(approval.evidence, tuple)
+    assert isinstance(approval.agent_trace_ids, tuple)
+
+
+def test_decided_approval_collection_fields_are_immutable_tuples() -> None:
+    payload = {
+        **_pending_payload(),
+        "status": ApprovalStatus.DECIDED,
+        "decision": ApprovalDecision.APPROVED,
+        "approver_id": MANAGER_ID,
+        "decided_at": datetime.now(UTC),
+    }
+
+    approval = DecidedApproval.model_validate(payload)
+
+    assert isinstance(approval.evidence, tuple)
+    assert isinstance(approval.agent_trace_ids, tuple)
 
 
 def test_decided_modified_approval_requires_modified_action() -> None:

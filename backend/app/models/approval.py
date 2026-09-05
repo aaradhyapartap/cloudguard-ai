@@ -43,7 +43,7 @@ class ApprovalEvidenceReference(BaseModel):
 
 
 def _validate_unique_evidence(
-    evidence: list[ApprovalEvidenceReference],
+    evidence: tuple[ApprovalEvidenceReference, ...],
 ) -> None:
     chunk_ids = [reference.chunk_id for reference in evidence]
 
@@ -51,13 +51,47 @@ def _validate_unique_evidence(
         raise ValueError("Approval evidence chunk_id values must be unique.")
 
 
+class ApprovalScoreComponentBreakdown(BaseModel):
+    """Deterministic scoring components produced by RiskScoringEngine."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    scoring_version: ShortText
+    total_controls: int = Field(ge=0)
+    applicable_controls: int = Field(ge=0)
+    sum_weights: Decimal = Field(ge=Decimal("0"))
+    sum_weighted_scores: Decimal = Field(ge=Decimal("0"))
+    critical_override_triggered: bool
+
+    @model_validator(mode="after")
+    def validate_component_counts(self) -> ApprovalScoreComponentBreakdown:
+        if self.applicable_controls > self.total_controls:
+            raise ValueError(
+                "applicable_controls cannot exceed total_controls."
+            )
+        return self
+
+
 class ApprovalScoreContext(BaseModel):
-    """Deterministic score context shown to the approving Manager."""
+    """Deterministic score and exact component breakdown shown to the Manager."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     score: Decimal = Field(ge=Decimal("0"), le=Decimal("100"))
     scoring_version: ShortText
+    component_breakdown: ApprovalScoreComponentBreakdown
+
+    @model_validator(mode="after")
+    def validate_scoring_version_alignment(self) -> ApprovalScoreContext:
+        if (
+            self.component_breakdown.scoring_version
+            != self.scoring_version
+        ):
+            raise ValueError(
+                "component_breakdown scoring_version must match "
+                "ApprovalScoreContext scoring_version."
+            )
+        return self
 
 
 class PendingApproval(BaseModel):
@@ -70,9 +104,9 @@ class PendingApproval(BaseModel):
     workflow_execution_id: ShortText
     recommendation_id: UUID
     proposed_action: ApprovalAction
-    evidence: list[ApprovalEvidenceReference] = Field(default_factory=list, max_length=10)
+    evidence: tuple[ApprovalEvidenceReference, ...] = Field(default_factory=tuple, max_length=10)
     score_context: ApprovalScoreContext | None = None
-    agent_trace_ids: list[ShortText] = Field(default_factory=list, max_length=16)
+    agent_trace_ids: tuple[ShortText, ...] = Field(default_factory=tuple, max_length=16)
     generator_model_id: ShortText | None = None
     reviewer_model_id: ShortText | None = None
     status: ApprovalStatus = ApprovalStatus.PENDING
@@ -132,9 +166,9 @@ class DecidedApproval(BaseModel):
     workflow_execution_id: ShortText
     recommendation_id: UUID
     proposed_action: ApprovalAction
-    evidence: list[ApprovalEvidenceReference] = Field(default_factory=list, max_length=10)
+    evidence: tuple[ApprovalEvidenceReference, ...] = Field(default_factory=tuple, max_length=10)
     score_context: ApprovalScoreContext | None = None
-    agent_trace_ids: list[ShortText] = Field(default_factory=list, max_length=16)
+    agent_trace_ids: tuple[ShortText, ...] = Field(default_factory=tuple, max_length=16)
     generator_model_id: ShortText | None = None
     reviewer_model_id: ShortText | None = None
     status: ApprovalStatus = ApprovalStatus.DECIDED
@@ -148,8 +182,14 @@ class DecidedApproval(BaseModel):
 
     @model_validator(mode="after")
     def validate_decided_state(self) -> DecidedApproval:
-        if self.status is not ApprovalStatus.DECIDED:
-            raise ValueError("DecidedApproval status must be decided.")
+        if self.status not in {
+            ApprovalStatus.DECIDED,
+            ApprovalStatus.EXECUTION_SUCCEEDED,
+            ApprovalStatus.EXECUTION_FAILED,
+        }:
+            raise ValueError(
+                "DecidedApproval status must represent a recorded human decision."
+            )
 
         _validate_unique_evidence(self.evidence)
 

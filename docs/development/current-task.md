@@ -58,7 +58,9 @@ Supported decisions are:
 
 `rejected` must carry a human justification.
 
-`approved` may carry an optional bounded comment, but cannot silently alter the proposed action.
+All three decisions may carry an optional bounded human comment.
+
+`approved` cannot silently alter the proposed action.
 
 ### Pending approval is immutable except through the decision service
 
@@ -234,6 +236,320 @@ Done when:
 - duplicate decision attempts fail closed;
 - a task token cannot appear in public repository projections;
 - database constraints enforce the lifecycle independently of API code.
+
+### Phase 7.2 Persistence Design
+
+Phase 7.2 uses one tenant-owned PostgreSQL `approvals` table.
+
+The table is the durable authority for:
+
+- the exact recommendation shown to the Manager;
+- the internal Step Functions task-token association;
+- the one-way human decision;
+- later execution lifecycle state.
+
+The public approval contracts remain separate from the persistence row.
+
+#### Approval table
+
+`approvals` contains:
+
+- `id UUID PRIMARY KEY`;
+- `organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE`;
+- `workflow_execution_id VARCHAR(256) NOT NULL`;
+- `recommendation_id UUID NOT NULL`;
+- `proposed_action JSONB NOT NULL`;
+- `evidence JSONB NOT NULL`;
+- `score_context JSONB NULL`, containing the deterministic score, scoring version, and the exact `RiskScoringEngine` component breakdown when scoring applies;
+- `agent_trace_ids JSONB NOT NULL`;
+- `generator_model_id VARCHAR(256) NULL`;
+- `reviewer_model_id VARCHAR(256) NULL`;
+- `status approval_status NOT NULL`;
+- `decision approval_decision NULL`;
+- `approver_id UUID NULL`;
+- `decided_at TIMESTAMPTZ NULL`;
+- `justification TEXT NULL`;
+- `comment TEXT NULL`;
+- `modified_action JSONB NULL`;
+- `task_token TEXT NOT NULL`;
+- `created_at TIMESTAMPTZ NOT NULL`;
+- `updated_at TIMESTAMPTZ NOT NULL`.
+
+The database enum `approval_decision` mirrors the existing application enum:
+
+- `approved`;
+- `rejected`;
+- `modified`.
+
+The database enum `approval_status` mirrors the Phase 7 application enum:
+
+- `pending`;
+- `decided`;
+- `execution_succeeded`;
+- `execution_failed`.
+
+#### Secret task-token boundary
+
+`task_token` is persistence-internal data.
+
+It must never be mapped into:
+
+- `PendingApproval`;
+- `DecidedApproval`;
+- approval queue responses;
+- approval detail responses;
+- audit-event payloads;
+- structured application logs.
+
+The normal repository read methods return public/domain approval projections without the token.
+
+A separate internal callback read method may return the task token only after the Approval is durably decided and while its lifecycle status remains `decided`. Once execution reaches `execution_succeeded` or `execution_failed`, callback context must no longer expose the task token.
+
+The Manager API never accepts a task token.
+
+The first Phase 7 implementation stores the task token only in the tenant-protected PostgreSQL row. Application/API secrecy and Aurora encryption-at-rest remain separate controls. Application-level token encryption is not introduced until there is an explicit key-management design rather than an ad-hoc cryptographic scheme.
+
+#### Retention
+
+Approval records are retained for at least seven years because they are part of the durable human-decision and audit record.
+
+Phase 7.2 intentionally exposes no application DELETE path and the database mutation guard rejects ordinary row deletion. Automated archival or privileged retention cleanup is outside Phase 7.2 and must not weaken the seven-year minimum retention period or permit application-role deletion.
+
+#### Uniqueness and indexes
+
+The migration must enforce:
+
+- unique `task_token`;
+- unique `(organization_id, workflow_execution_id)`;
+- unique `(organization_id, id)` on `users` if no equivalent candidate key already exists;
+- composite foreign key `(organization_id, approver_id)` -> `users(organization_id, id)` with `ON DELETE RESTRICT`;
+- index `(organization_id, id)`;
+- pending queue index `(organization_id, created_at)` where `decision IS NULL`;
+- decided lookup index `(organization_id, decision, decided_at)` where `decision IS NOT NULL`.
+
+The tenant-coupled approver foreign key is intentional. A globally valid user UUID from another organization must not be recordable as the human approver even if application authorization is accidentally bypassed.
+
+A workflow execution may create at most one Approval in this Phase 7 workflow.
+
+#### Structural JSON constraints
+
+The database must reject structurally invalid snapshots before application deserialization.
+
+Required checks:
+
+- `jsonb_typeof(proposed_action) = 'object'`;
+- `jsonb_typeof(evidence) = 'array'`;
+- `jsonb_array_length(evidence) <= 10`;
+- `score_context IS NULL OR jsonb_typeof(score_context) = 'object'`;
+- `jsonb_typeof(agent_trace_ids) = 'array'`;
+- `jsonb_array_length(agent_trace_ids) <= 16`;
+- `modified_action IS NULL OR jsonb_typeof(modified_action) = 'object'`.
+
+Detailed field validation remains authoritative in the frozen Pydantic contracts.
+
+#### Lifecycle constraints
+
+A pending Approval must satisfy all of:
+
+- `status = 'pending'`;
+- `decision IS NULL`;
+- `approver_id IS NULL`;
+- `decided_at IS NULL`;
+- `justification IS NULL`;
+- `comment IS NULL`;
+- `modified_action IS NULL`.
+
+A decided Approval must satisfy:
+
+- `status IN ('decided', 'execution_succeeded', 'execution_failed')`;
+- `decision IS NOT NULL`;
+- `approver_id IS NOT NULL`;
+- `decided_at IS NOT NULL`.
+
+Decision-specific constraints:
+
+`approved`:
+
+- `modified_action IS NULL`.
+
+`rejected`:
+
+- non-empty `justification` is required;
+- `modified_action IS NULL`.
+
+`modified`:
+
+- non-empty `justification` is required;
+- `modified_action IS NOT NULL`.
+
+`comment` is optional for all three decisions and is not a substitute for the mandatory `justification` on rejected or modified decisions.
+
+These rules must be represented as PostgreSQL CHECK constraints so a malformed repository call cannot bypass them.
+
+#### Frozen recommendation context
+
+After INSERT, these fields are immutable:
+
+- `id`;
+- `organization_id`;
+- `workflow_execution_id`;
+- `recommendation_id`;
+- `proposed_action`;
+- `evidence`;
+- `score_context`;
+- `agent_trace_ids`;
+- `generator_model_id`;
+- `reviewer_model_id`;
+- `task_token`;
+- `created_at`.
+
+A database trigger must reject UPDATE attempts that alter any of those fields.
+
+The trigger must also reject:
+
+- `pending -> pending` writes that mutate decision fields;
+- any transition back to `pending`;
+- any second human decision;
+- mutation of decision/approver/decision timestamp after decision;
+- transition from either execution terminal state;
+- DELETE.
+
+The allowed lifecycle transitions remain exactly:
+
+`pending -> decided`
+
+`decided -> execution_succeeded`
+
+`decided -> execution_failed`
+
+Phase 7.2 implements only the atomic `pending -> decided` write path. Later execution-state changes reuse the same guarded lifecycle.
+
+#### Row-level security
+
+`approvals` is a tenant-owned table.
+
+The migration must:
+
+- `ENABLE ROW LEVEL SECURITY`;
+- `FORCE ROW LEVEL SECURITY`;
+- derive the predicate from `app.current_organization_id`;
+- create tenant-scoped SELECT policy;
+- create tenant-scoped INSERT policy;
+- create tenant-scoped UPDATE policy;
+- create no DELETE policy.
+
+When the `cloudguard_app` role exists, grant only:
+
+- `SELECT`;
+- `INSERT`;
+- `UPDATE`.
+
+Do not grant DELETE.
+
+Application queries still include explicit `organization_id` predicates as defense in depth.
+
+#### Repository boundary
+
+Follow the existing project persistence layout:
+
+- repository port: `backend/app/ports/approval_repository.py`;
+- SQLAlchemy implementation: `backend/app/adapters/local/approval_repository.py`;
+- ORM `Approval` table mapping: `backend/app/repositories/tables.py`.
+
+Do not introduce a second declarative base or a parallel ORM package.
+
+Add an `ApprovalRepository` port with bounded methods equivalent to:
+
+`create_pending(...) -> PendingApproval`
+
+Creates the exact frozen recommendation snapshot and its internal task-token association.
+
+`get_by_id(*, organization_id, approval_id) -> PendingApproval | DecidedApproval | None`
+
+Always tenant scoped. Never returns a task token.
+
+`list_pending(*, organization_id, limit) -> list[PendingApproval]`
+
+Always tenant scoped.
+
+`decide_pending(...) -> DecidedApproval | None`
+
+Performs one atomic compare-and-set update equivalent to:
+
+`UPDATE approvals ... WHERE organization_id = :organization_id AND id = :approval_id AND status = 'pending' AND decision IS NULL RETURNING ...`
+
+Only the first decision may succeed.
+
+No preliminary `SELECT` followed by an unconditional `UPDATE` is permitted for the authoritative transition.
+
+`get_decided_callback_context(*, organization_id, approval_id) -> ApprovalCallbackContext | None`
+
+Internal-only method.
+
+It may return:
+
+- approval ID;
+- organization ID;
+- immutable task token;
+- recorded human decision;
+- validated effective action information needed by the later callback adapter.
+
+It must return nothing while the Approval is still pending or after the Approval reaches an execution terminal state. Callback retry/recovery is therefore possible only while the persisted lifecycle remains `decided`.
+
+`ApprovalCallbackContext` is not an API response model.
+
+#### Atomic decision semantics
+
+The repository performs the human decision with a single compare-and-set UPDATE.
+
+If the UPDATE returns no row, callers must distinguish only through a tenant-scoped follow-up read:
+
+- no visible row -> not found;
+- visible row already decided -> conflict.
+
+A duplicate decision must never overwrite the original decision.
+
+A retry after callback failure must use the already persisted decision rather than re-running the decision transition.
+
+#### Persistence mapping
+
+The SQLAlchemy persistence row is allowed to contain `task_token`.
+
+Mapping from persistence to public/domain contracts must explicitly enumerate safe fields.
+
+Do not implement public projections using:
+
+- `row.__dict__`;
+- unrestricted ORM serialization;
+- generic `model_validate(row)` where internal fields could be copied accidentally.
+
+The task token must be omitted by construction.
+
+#### Migration
+
+Create a new forward-only migration:
+
+`0007_approvals.py`
+
+with:
+
+`revision = "0007"`
+
+`down_revision = "0006"`
+
+Do not modify historical migrations.
+
+The migration must include:
+
+- PostgreSQL enums;
+- the `users(organization_id, id)` candidate key required by the tenant-coupled approver foreign key;
+- approvals table;
+- constraints;
+- indexes;
+- RLS;
+- application-role privileges;
+- guarded lifecycle/context trigger;
+- downgrade cleanup in reverse dependency order, including removal of the added users candidate key only after the approvals foreign key/table is gone.
 
 ### Phase 7.3 - Manager Decision Service and API
 

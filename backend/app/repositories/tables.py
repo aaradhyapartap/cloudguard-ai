@@ -22,6 +22,7 @@ from uuid import UUID, uuid4
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
+    DateTime,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -37,6 +38,8 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.enums import (
+    ApprovalDecision,
+    ApprovalStatus,
     AssessmentStatus,
     ConfidentialityLevel,
     ControlStatus,
@@ -80,6 +83,7 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         UniqueConstraint("organization_id", "email", name="uq_users_org_email"),
+        UniqueConstraint("organization_id", "id", name="uq_users_org_id"),
         Index("ix_users_organization_id", "organization_id"),
     )
 
@@ -522,3 +526,136 @@ class ScoreOverride(Base):
         PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
     overridden_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+
+class Approval(Base):
+    """Tenant-owned durable human approval state.
+
+    ``task_token`` is persistence-internal and must never be exposed through
+    public approval projections.
+    """
+
+    __tablename__ = "approvals"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "approver_id"],
+            ["users.organization_id", "users.id"],
+            ondelete="RESTRICT",
+            name="fk_approvals_approver_org",
+        ),
+        UniqueConstraint(
+            "task_token",
+            name="uq_approvals_task_token",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "workflow_execution_id",
+            name="uq_approvals_org_workflow_execution",
+        ),
+        Index(
+            "ix_approvals_org_id",
+            "organization_id",
+            "id",
+        ),
+        Index(
+            "ix_approvals_pending_queue",
+            "organization_id",
+            "created_at",
+            postgresql_where=text("decision IS NULL"),
+        ),
+        Index(
+            "ix_approvals_decided_lookup",
+            "organization_id",
+            "decision",
+            "decided_at",
+            postgresql_where=text("decision IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    workflow_execution_id: Mapped[str] = mapped_column(
+        String(256),
+        nullable=False,
+    )
+    recommendation_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=False,
+    )
+
+    proposed_action: Mapped[dict[str, object]] = mapped_column(
+        JSONB,
+        nullable=False,
+    )
+    evidence: Mapped[list[dict[str, object]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
+    score_context: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True),
+        nullable=True,
+    )
+    agent_trace_ids: Mapped[list[str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
+
+    generator_model_id: Mapped[str | None] = mapped_column(
+        String(256),
+        nullable=True,
+    )
+    reviewer_model_id: Mapped[str | None] = mapped_column(
+        String(256),
+        nullable=True,
+    )
+
+    status: Mapped[ApprovalStatus] = mapped_column(
+        _pg_enum(ApprovalStatus, "approval_status"),
+        nullable=False,
+        server_default=ApprovalStatus.PENDING.value,
+    )
+    decision: Mapped[ApprovalDecision | None] = mapped_column(
+        _pg_enum(ApprovalDecision, "approval_decision"),
+        nullable=True,
+    )
+
+    approver_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=True,
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    justification: Mapped[str | None] = mapped_column(Text, nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    modified_action: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True),
+        nullable=True,
+    )
+
+    task_token: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
