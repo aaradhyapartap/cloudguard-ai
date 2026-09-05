@@ -86,3 +86,10 @@ class ApprovalDecision(StrEnum):
     APPROVED = "approved"
     REJECTED = "rejected"
     MODIFIED = "modified"
+
+
+class ApprovalStatus(StrEnum):
+    PENDING = "pending"
+    DECIDED = "decided"
+    EXECUTION_SUCCEEDED = "execution_succeeded"
+    EXECUTION_FAILED = "execution_failed"

@@ -1,349 +1,381 @@
-# Current Development Task
+# Current Task
 
-## Phase
-
-Phase 6 - Deterministic Agent Workflows
-
-## Branch
-
-phase-6-agents
+Phase 7 - Human Approval and Consequential Action Gating
 
 ## Objective
 
-Implement CloudGuard AI's first bounded multi-agent workflow using fixed, auditable orchestration rather than emergent agent-to-agent delegation.
+Phase 7 extends a successfully reviewed agent workflow with a real human approval boundary.
 
-Phase 6 implements:
+Consequential actions must never execute directly from model output.
 
-Research -> Risk -> Reviewer
+The successful workflow path becomes:
 
-with a Principal-bound ToolRegistry and deterministic workflow graph.
+Research -> Risk -> Reviewer -> Approval -> Approved Action
 
-Human approval, task tokens, approval decisions, and execution of approved actions remain Phase 7 and are explicitly out of scope.
+Reviewer FAIL still terminates the workflow before approval.
+
+Reviewer PASS may create a pending Approval and pause the workflow until an authorized Manager approves, rejects, or modifies the recommendation.
 
 ## Architectural Invariants
 
-### Original human Principal is authoritative
+### Human decision is authoritative
 
-Every agent execution and every tool invocation carries the original authenticated Principal.
+The LLM may propose recommendations but cannot:
 
-Agents do not receive elevated service identities for application authorization.
+- approve its own recommendation;
+- reject a recommendation;
+- modify an authoritative recommendation;
+- supply an approver identity;
+- supply approval permissions;
+- resume a Step Functions execution;
+- execute a consequential action.
 
-Tenant identity, role permissions, and confidentiality clearance must never be supplied by model output or request payloads.
+Only application code acting for an authenticated Principal with `Permission.APPROVAL_DECIDE` may decide an Approval.
 
-Existing application services remain authoritative for their own security boundaries.
+### Segregation of duties
 
-### ToolRegistry is the execution gate
+Approval decisions are Manager-only.
 
-The model may propose a tool-call intent, but it never receives credentials or directly invokes infrastructure.
+Existing RBAC remains authoritative:
 
-A tool call executes only when both conditions pass:
+- Manager: may read and decide approvals;
+- Analyst: may not decide approvals;
+- Admin: may read approvals but may not decide them.
 
-1. the requested tool exists in the registry and is statically allowed for that agent; and
-2. the original human Principal is authorized for the underlying operation.
+Administrative platform authority is not compliance judgment authority.
 
-Unknown tools, malformed arguments, out-of-scope tools, and unauthorized calls fail closed before tool code executes.
+### Three-way decision
 
-No wildcard tool permissions are allowed.
+Approval is not boolean.
 
-### Agents have narrow static capabilities
+Supported decisions are:
 
-Research Agent:
+- `approved`;
+- `rejected`;
+- `modified`.
 
-- may search authorized documents and obtain retrieved evidence;
-- is strictly read-only;
-- cannot mutate compliance, risk, investigation, approval, or document state.
+`modified` must carry a bounded replacement action/recommendation payload and a mandatory human justification.
 
-Risk Agent:
+`rejected` must carry a human justification.
 
-- consumes validated evidence/context produced by prior bounded steps;
-- emits structured candidate risk/component estimates only;
-- cannot write authoritative scores;
-- deterministic Python scoring remains authoritative.
+`approved` may carry an optional bounded comment, but cannot silently alter the proposed action.
 
-Reviewer Agent:
+### Pending approval is immutable except through the decision service
 
-- consumes the bounded workflow result and authoritative retrieved evidence;
-- validates grounding, citation existence, schema integrity, and workflow constraints;
-- has no write tools;
-- may fail the workflow;
-- must use a separately configured reviewer/judge model rather than silently reusing the generator model configuration.
+A pending Approval represents the exact recommendation presented to the Manager.
 
-### LLMs remain advisory
+The proposal payload, evidence references, deterministic score context, agent trace identifiers, model identifiers, workflow execution identifier, and task-token association must not be editable through general CRUD behavior.
 
-No model output directly becomes an authoritative compliance score, risk classification, approval decision, or executed action.
+The decision transition must be atomic and one-way.
 
-Structured model output is parsed and validated by application code.
+A decided Approval cannot be decided again.
 
-Python remains authoritative for deterministic risk scoring.
+### Original Principal and tenant remain authoritative
 
-### Retrieval security is not duplicated
+`organization_id`, approver identity, role, and permissions always originate from the authenticated Principal.
 
-Agent document search delegates to the existing RetrievalService.
+No request body may supply or override:
 
-RetrievalService remains authoritative for:
+- organization_id;
+- approver_id;
+- role;
+- permissions;
+- task token.
 
-- organization scoping from Principal.organization_id;
-- confidentiality filtering from the Principal clearance ceiling;
-- vector search tenant isolation.
+Repository reads and writes must remain tenant-scoped.
 
-The ToolRegistry authorizes whether an agent may request retrieval; it does not replace retrieval security.
+### Task tokens are secret capabilities
 
-### Orchestration is deterministic
+A Step Functions task token is an internal workflow capability.
 
-The workflow graph is fixed:
+It must:
 
-Research -> Risk -> Reviewer
+- never be returned by approval list/read API responses;
+- never be accepted from the Manager decision request body;
+- never be logged;
+- never be embedded in audit-event user-visible metadata;
+- only be read by the trusted callback service after authorization and successful atomic decision persistence.
 
-Agents cannot dynamically choose another agent, spawn arbitrary agents, or change workflow topology.
+The Manager decides using the Approval ID. Application code resolves the associated internal task token.
 
-Reviewer failure terminates the Phase 6 workflow.
+### Decision persistence precedes workflow callback
 
-Phase 7 will extend the successful Reviewer path with human approval.
+The authoritative human decision must be durably recorded before attempting to resume Step Functions.
 
-### Provider-neutral model access
+If the callback fails after persistence:
 
-Agents depend only on the existing LLMProvider port and provider-neutral GenerationRequest / GenerationResponse models.
+- the Approval remains decided;
+- the decision must not be accepted a second time;
+- callback retry/recovery must use the already-recorded decision;
+- duplicate execution of a consequential action must be prevented.
 
-No agent service imports Bedrock SDK types.
+### Execution is constrained to the approved action
 
-The composition root is responsible for selecting concrete providers.
+Approval does not grant arbitrary execution rights.
 
-Phase 6 may wire distinct generator and reviewer LLMProvider instances so the reviewer model can be configured independently.
+The execution boundary may execute only:
 
-### Bounded execution
+- the originally proposed action for `approved`;
+- no consequential action for `rejected`;
+- the validated Manager-modified action for `modified`.
 
-Every model invocation must have explicit bounds for:
+No model-generated action may bypass this projection.
 
-- input/context size;
-- output tokens;
-- number of retrieved evidence items;
-- number of tool calls;
-- tool argument schema;
-- structured output schema.
+## Approval State Model
 
-No unbounded agent loop is permitted.
+The Phase 7 Approval aggregate has an explicit lifecycle.
 
-### Phase 7 boundary
+### Status
 
-Phase 6 does NOT implement:
+- `pending`
+- `decided`
+- `execution_succeeded`
+- `execution_failed`
 
-- approval queue behavior;
-- waitForTaskToken;
-- Manager approval/rejection/modification callbacks;
-- execution of approved actions;
-- automated remediation.
+Allowed transitions:
 
-Those remain Phase 7.
+`pending -> decided`
 
-## Phase 6 Implementation Plan
+`decided -> execution_succeeded`
 
-### Phase 6.1 - Agent Contracts and Secure ToolRegistry
+`decided -> execution_failed`
 
-Deliver:
+No transition returns to `pending`.
 
-- provider-neutral agent/domain models;
-- bounded AgentType identity;
-- typed tool-call request and result contracts;
-- explicit tool definitions with argument schemas;
-- static per-agent allowlists;
-- Principal-bound ToolRegistry;
-- fail-closed unknown-tool behavior;
-- fail-closed malformed argument behavior;
-- authorization before execution;
-- bounded tool-call count;
-- unit tests proving out-of-scope tools never execute.
+No terminal execution state may transition again.
 
-Initial tool surface should remain intentionally small.
+### Decision
 
-Expected Research capability:
+Decision is nullable while status is `pending`.
 
-- search_documents
+Once decided it is exactly one of:
 
-Additional read tools are added only when an implemented service can back them without bypassing existing authorization.
+- `approved`
+- `rejected`
+- `modified`
 
-Done when:
+A decision is immutable after persistence.
 
-- Research can invoke its explicitly allowed read tool;
-- Risk and Reviewer cannot invoke Research-only tools unless explicitly granted;
-- unknown and unauthorized calls are rejected before handler execution;
-- tests prove the original Principal is passed to the underlying service.
+### Required approval context
 
-### Phase 6.2 - Research Agent
+A pending Approval must bind to:
 
-Deliver:
+- approval ID;
+- organization ID;
+- workflow execution ID;
+- recommendation/action identifier;
+- bounded proposed action payload;
+- trusted evidence references;
+- deterministic score and scoring version where applicable;
+- agent execution / trace identifiers;
+- generator and reviewer model identifiers where available;
+- created timestamp;
+- internal task-token association.
 
-- bounded Research Agent service;
-- retrieval through the ToolRegistry and existing RetrievalService;
-- deterministic evidence/source labels;
-- structured Research result schema;
-- preservation of trusted chunk/document provenance;
-- prompt-injection boundary treating retrieved documents as untrusted data;
-- zero-result behavior that avoids unnecessary model calls where possible;
-- strict context and output ceilings.
+A decided Approval additionally binds to:
 
-Research remains read-only.
+- decision;
+- approver user ID;
+- decision timestamp;
+- mandatory justification for reject/modify;
+- optional comment for approve;
+- validated modified action when decision is `modified`.
 
-Done when:
+## Phase 7 Implementation Plan
 
-- Research produces a validated bounded evidence result;
-- every evidence reference maps to actually retrieved authorized evidence;
-- higher-clearance and cross-tenant evidence cannot enter the result;
-- prompt text cannot cause an out-of-scope tool to execute.
-
-### Phase 6.3 - Risk Agent
+### Phase 7.1 - Approval Contracts and State Machine
 
 Deliver:
 
-- bounded Risk Agent service;
-- structured candidate risk/component estimates derived only from trusted upstream evidence;
-- evidence references constrained to trusted upstream Research output;
-- no direct persistence of authoritative score/classification;
-- integration with the deterministic Python scoring boundary where applicable;
-- strict schema and finite numeric validation;
-- fail-closed handling of malformed or invented evidence references.
+- provider-neutral Approval models;
+- explicit ApprovalStatus enum;
+- reuse existing ApprovalDecision enum;
+- bounded proposed-action contract;
+- bounded modified-action contract;
+- pending Approval contract;
+- Manager decision request contract;
+- decided Approval contract;
+- explicit state-transition validation;
+- no task-token field in public response models;
+- unit tests for immutable and invalid transitions.
+
+No database migration, HTTP endpoint, or AWS callback is added in 7.1.
 
 Done when:
 
-- identical accepted deterministic scoring inputs still produce identical authoritative scores independent of model output wording;
-- Risk Agent can propose estimates but cannot write or override the authoritative deterministic result;
-- invented evidence identifiers are rejected.
+- pending approvals cannot contain a decision;
+- decided approvals require decision and approver metadata;
+- rejected and modified decisions require justification;
+- modified decisions require a validated replacement action;
+- approved decisions cannot smuggle a modified action;
+- extra identity and task-token fields are rejected;
+- contracts are frozen and bounded.
 
-### Phase 6.4 - Reviewer Agent
+### Phase 7.2 - Approval Persistence and Queue
 
 Deliver:
 
-- bounded Reviewer Agent service;
-- separately configured reviewer/judge LLMProvider;
-- grounding validation;
-- citation/evidence existence validation;
-- structured PASS / FAIL review result with bounded reasons;
-- deterministic application checks around model review output;
-- no write-capable tools.
+- Approval repository port;
+- SQLAlchemy persistence model;
+- new forward-only Alembic migration;
+- tenant-scoped approval reads;
+- pending approval creation;
+- unique workflow/task-token association;
+- atomic compare-and-set pending -> decided behavior;
+- approval queue/list service;
+- database constraints and indexes;
+- integration tests for tenant isolation and duplicate decisions.
 
-Reviewer failure must fail the workflow.
+Task tokens remain internal-only.
 
 Done when:
 
-- a grounded valid run can pass;
-- missing/invented citations fail;
-- malformed reviewer output fails closed;
-- Reviewer cannot mutate application state;
-- tests prove the Reviewer provider can be configured independently from the generator provider.
+- Tenant A cannot read or decide Tenant B approvals;
+- duplicate decision attempts fail closed;
+- a task token cannot appear in public repository projections;
+- database constraints enforce the lifecycle independently of API code.
 
-### Phase 6.5 - Deterministic Workflow Orchestration
+### Phase 7.3 - Manager Decision Service and API
 
 Deliver:
 
-- fixed Research -> Risk -> Reviewer workflow contract;
-- deterministic workflow state transitions;
-- execution/correlation identifiers;
-- bounded step inputs/outputs;
-- failure propagation;
-- Step Functions definition/infrastructure for the fixed graph;
-- local/test orchestration path that does not require AWS;
-- workflow trace metadata sufficient for later Phase 7 audit/approval use;
-- ENABLE_AGENTIC_WORKFLOWS remains the feature gate.
+- approval application service;
+- Manager-only approve/reject/modify operations;
+- approval list/detail endpoints;
+- strict request schemas;
+- server-derived approver and tenant identity;
+- idempotent conflict behavior for already-decided approvals;
+- API authorization matrix tests.
 
-No human approval state is added in Phase 6.
+Do not invoke Step Functions from the HTTP route directly.
 
 Done when:
 
-- the fixed graph executes in order;
-- no agent can dynamically select the next agent;
-- Reviewer FAIL terminates the run;
-- the ToolRegistry rejects an out-of-scope call;
-- local deterministic tests and infrastructure tests cover the graph.
+- Manager can decide a pending Approval;
+- Analyst receives 403;
+- Admin receives 403 for decisions;
+- forged tenant/approver/task-token fields are rejected;
+- approval read responses never expose task tokens.
 
-### Phase 6.6 - Bounded Compliance Agent
+### Phase 7.4 - Step Functions Task-Token Pause and Callback
 
 Deliver:
 
-- bounded Compliance Agent service;
-- Principal-bound `get_policy` and `search_documents` execution through the ToolRegistry;
-- tenant-safe read-only compliance policy boundary;
-- policy/control context bounded to at most 25 controls;
-- evidence retrieval bounded to at most 10 chunks;
-- model-planned search intent with strict schema validation;
-- model evaluation constrained to trusted policy context and trusted retrieved evidence;
-- non-authoritative candidate findings only;
-- no score persistence, finding persistence, notifications, approvals, or remediation;
-- source-label validation against actually retrieved evidence;
-- quote provenance derived only from trusted retrieved chunk content;
-- duplicate-control and unknown-source fail-closed validation;
-- real planning/evaluation model usage telemetry;
-- zero-evidence behavior that skips the evaluation model call;
-- tests proving original tenant and clearance boundaries are preserved.
+- Reviewer PASS -> Approval wait state;
+- `.waitForTaskToken` integration;
+- trusted approval creation worker;
+- internal callback adapter/port;
+- callback recovery semantics;
+- Reviewer FAIL remains terminal;
+- infrastructure tests for the deterministic graph;
+- local callback test double.
 
-Compliance remains read-only and non-authoritative.
+The workflow must genuinely stop while approval is pending.
 
 Done when:
 
-- `get_policy` and `search_documents` are the only Compliance Agent tools;
-- Research, Risk, and Reviewer cannot invoke `get_policy`;
-- policy reads use the original human Principal and tenant-scoped assessment lookup;
-- the model cannot supply organization, role, permission, or clearance identity;
-- the evaluator receives trusted control title/description from the policy boundary;
-- every returned evidence reference maps to retrieved authorized evidence;
-- cross-tenant and higher-clearance evidence cannot enter findings;
-- malformed tool intent, invented source labels, duplicate controls, and invalid output fail closed;
-- no Phase 7 approval/task-token behavior is introduced;
-- focused Compliance and ToolRegistry tests pass.
+- no callback occurs before a Manager decision;
+- approved/modified decisions resume with validated decision data;
+- rejected decisions resume into a non-executing rejection path;
+- a forged or externally supplied task token cannot resume a workflow;
+- callback retry cannot create a second human decision.
+
+### Phase 7.5 - Audit and Approved-Action Boundary
+
+Deliver:
+
+- immutable audit events for approval creation, decision, callback, and execution result;
+- approved-action projection;
+- reject path that executes no consequential action;
+- modified-action validation;
+- execution idempotency key;
+- failure recording;
+- tests proving only the approved action can execute.
+
+Automated remediation remains out of scope unless the approved action explicitly represents a bounded Phase 7 demo action.
+
+Done when:
+
+- every human decision records actor, decision, timestamp, and justification/comment;
+- approval audit events contain no task token;
+- rejection executes nothing;
+- modification executes only the validated human-modified action;
+- execution replay cannot duplicate a consequential side effect.
+
 ## Security Test Requirements
 
-Phase 6 tests must explicitly cover:
+Phase 7 must explicitly test:
 
-- cross-tenant tool requests;
-- confidentiality/clearance enforcement;
-- out-of-allowlist tools;
-- unknown tools;
-- malformed tool arguments;
-- model-supplied organization IDs being ignored/rejected;
-- model-supplied role/clearance escalation attempts;
-- prompt-injection attempts requesting write tools;
-- invented evidence/chunk identifiers;
-- Reviewer write attempts;
-- Reviewer FAIL workflow termination;
-- tool-call budget exhaustion;
-- model output schema failures.
+- Analyst decision attempt;
+- Admin decision attempt;
+- cross-tenant approval read;
+- cross-tenant approval decision;
+- model-supplied approver identity;
+- request-supplied organization ID;
+- request-supplied task token;
+- task-token leakage in responses;
+- task-token leakage in logs/audit payloads;
+- duplicate decision race;
+- decision of an already-decided Approval;
+- reject without justification;
+- modify without justification;
+- modify without replacement action;
+- approve with an unauthorized replacement action;
+- callback before durable decision persistence;
+- callback retry after persistence;
+- duplicate action execution;
+- Reviewer FAIL bypassing approval creation.
 
 ## Existing Components to Reuse
 
-- LLMProvider
-- GenerationRequest
-- GenerationResponse
-- RetrievalService
-- VectorStore
-- Principal
-- centralized RBAC in security/authz.py
-- existing compliance deterministic scoring services
-- existing configuration/composition-root pattern
-- existing AWS Step Functions/CDK infrastructure patterns
+- `ApprovalDecision`
+- `Permission.APPROVAL_READ`
+- `Permission.APPROVAL_DECIDE`
+- `Principal`
+- centralized RBAC in `security/authz.py`
+- Phase 6 Reviewer result
+- Phase 6 workflow execution/correlation identifiers
+- deterministic scoring models and scoring version
+- existing repository/composition-root patterns
+- AWS Step Functions/CDK infrastructure patterns
 
-Do not duplicate these boundaries in agent-specific code.
+Do not duplicate these boundaries.
+
+## Explicit Non-Goals
+
+Phase 7 does not introduce:
+
+- LLM-decided approvals;
+- emergent agent delegation;
+- model-visible AWS credentials;
+- public task-token APIs;
+- arbitrary tool execution after approval;
+- approval by Admin;
+- approval by Analyst;
+- automated self-approval;
+- unbounded remediation loops.
 
 ## Validation
 
-Focused Phase 6 validation must pass before full validation.
+Focused Phase 7 tests must pass before full validation.
 
-Full validation:
+Before each Phase 7 commit:
 
-powershell -ExecutionPolicy Bypass -File .\scripts\validate-all.ps1
-
-Additionally:
-
-- Ruff must pass.
-- mypy must pass.
-- git diff --check must pass.
-- existing Phase 1-5 tests must remain green.
-- agent authorization matrix tests must pass.
-- workflow infrastructure tests must pass.
+- Ruff passes for affected code;
+- mypy passes for application code;
+- focused Phase 7 tests pass;
+- existing Phase 1-6 tests remain green;
+- infrastructure tests pass when orchestration changes;
+- `git diff --check` passes;
+- architecture review confirms task-token secrecy and Manager-only decisions.
 
 ## Commit Policy
 
-Do not commit or push until:
+Do not commit or push until each subphase:
 
-- focused validation passes;
-- full validation passes;
-- git diff --check passes;
-- architecture review is complete;
-- Phase 7 approval behavior has not leaked into Phase 6.
+- has focused tests;
+- preserves tenant isolation;
+- preserves segregation of duties;
+- passes applicable validation;
+- has been reviewed for task-token leakage;
+- does not permit a model to become the authoritative decision maker.
