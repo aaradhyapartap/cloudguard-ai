@@ -778,3 +778,21 @@ async def test_workflow_execution_is_unique_within_tenant() -> None:
     )
 
     assert other.organization_id == ORG_B
+
+@pytest.mark.asyncio
+async def test_application_role_has_no_delete_privilege() -> None:
+    """The runtime application role must never be able to DELETE approvals directly."""
+    async with tenant_session(ORG_A) as session:
+        result = await session.execute(
+            text(
+                """
+                SELECT has_table_privilege(
+                    current_user,
+                    'approvals',
+                    'DELETE'
+                )
+                """
+            )
+        )
+
+    assert result.scalar_one() is False

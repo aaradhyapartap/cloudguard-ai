@@ -475,6 +475,44 @@ async def test_snapshot_insert_and_select_succeeds() -> None:
         assert saved.risk_classification == RiskClassification.LOW
 
 
+async def test_application_role_has_no_snapshot_mutation_privileges() -> None:
+    """The runtime role must not have UPDATE or DELETE on immutable compliance tables."""
+    _skip_without_database()
+
+    async with tenant_session(ORG_A) as session:
+        result = await session.execute(
+            text(
+                """
+                SELECT
+                    has_table_privilege(
+                        current_user,
+                        'assessment_score_snapshots',
+                        'UPDATE'
+                    ),
+                    has_table_privilege(
+                        current_user,
+                        'assessment_score_snapshots',
+                        'DELETE'
+                    ),
+                    has_table_privilege(
+                        current_user,
+                        'score_overrides',
+                        'UPDATE'
+                    ),
+                    has_table_privilege(
+                        current_user,
+                        'score_overrides',
+                        'DELETE'
+                    )
+                """
+            )
+        )
+
+    privileges = result.one()
+
+    assert privileges == (False, False, False, False)
+
+
 async def test_snapshot_update_fails() -> None:
     """Under cloudguard_app role, UPDATE on existing snapshot must fail."""
     _skip_without_database()
