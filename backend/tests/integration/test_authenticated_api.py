@@ -28,6 +28,7 @@ from conftest import ORG_A, bearer, skip_without_database  # type: ignore[import
 pytestmark = [pytest.mark.integration, skip_without_database]
 
 MISSING_DOCUMENT_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+MISSING_APPROVAL_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
 DOCUMENT_CREATE_BODY = {
     "filename": "phase3-test-policy.pdf",
@@ -142,6 +143,21 @@ ROUTE_MATRIX: dict[tuple[str, str], dict[Role, int]] = {
         Role.MANAGER: 404,
         Role.ADMIN: 404,
     },
+    ("GET", "/api/v1/approvals"): {
+        Role.ANALYST: 403,
+        Role.MANAGER: 200,
+        Role.ADMIN: 200,
+    },
+    ("GET", "/api/v1/approvals/{approval_id}"): {
+        Role.ANALYST: 403,
+        Role.MANAGER: 404,
+        Role.ADMIN: 404,
+    },
+    ("POST", "/api/v1/approvals/{approval_id}/decision"): {
+        Role.ANALYST: 403,
+        Role.MANAGER: 404,
+        Role.ADMIN: 403,
+    },
 }
 
 
@@ -180,6 +196,7 @@ def test_route_protection_matrix(
         path.replace("{document_id}", MISSING_DOCUMENT_ID)
         .replace("{assessment_id}", MISSING_DOCUMENT_ID)
         .replace("{control_assessment_id}", MISSING_DOCUMENT_ID)
+        .replace("{approval_id}", MISSING_APPROVAL_ID)
     )
     headers = bearer(token_signer, principal_for(role))
 
@@ -237,6 +254,13 @@ def test_route_protection_matrix(
             request_path,
             headers=headers,
             json={"override_overall_score": 85.0, "justification": "Manager override"},
+        )
+    elif method == "POST" and path == "/api/v1/approvals/{approval_id}/decision":
+        response = client.request(
+            method,
+            request_path,
+            headers=headers,
+            json={"decision": "approved"},
         )
     else:
         response = client.request(

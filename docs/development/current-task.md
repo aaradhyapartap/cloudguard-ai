@@ -573,6 +573,75 @@ Done when:
 - forged tenant/approver/task-token fields are rejected;
 - approval read responses never expose task tokens.
 
+#### Phase 7.3 implementation status
+
+Implemented locally on `phase-7-approvals`:
+
+- `ApprovalService` for tenant-scoped pending queue, detail reads, and first-decision-wins decisions;
+- `GET /api/v1/approvals`;
+- `GET /api/v1/approvals/{approval_id}`;
+- `POST /api/v1/approvals/{approval_id}/decision`;
+- route-level and service-level `APPROVAL_READ` / `APPROVAL_DECIDE` enforcement;
+- Manager-only decision authority;
+- Admin read-only approval access;
+- Analyst denied approval access;
+- server-derived organization and approver identity;
+- approved, rejected, and modified decision paths;
+- conflict response for already-decided approvals and compare-and-set races;
+- cross-tenant approval reads and decisions fail as not found;
+- forged organization, approver, and task-token request fields are rejected;
+- approval API responses never expose the internal task token;
+- no Step Functions callback is invoked from the HTTP layer.
+
+Focused Phase 7.3 validation currently passes:
+
+- Ruff for affected Phase 7 files;
+- mypy for the approval router/service path;
+- 10 approval-service unit tests;
+- 78 authenticated API authorization-matrix tests;
+- 19 approval-persistence integration tests;
+- 9 approval-API integration tests;
+- `git diff --check`.
+
+Full backend regression validation passes before commit:
+
+- Ruff: all checks passed;
+- mypy: no issues in 106 source files;
+- pytest: 762 backend tests passed with PostgreSQL integration tests enabled;
+- Alembic: `0009 (head)`;
+- published migrations `0005`, `0006`, and `0007` remain unchanged;
+- `git diff --check` passes.
+
+#### Phase 7.2 privilege hardening follow-up
+
+Published migration `0007_approvals.py` remains unchanged.
+
+Forward migration `0008_approval_privilege_hardening.py` explicitly revokes
+`DELETE` on `approvals` from `cloudguard_app` for existing environments that
+may have inherited a prior broad table grant.
+
+The approval persistence suite verifies with PostgreSQL
+`has_table_privilege(current_user, 'approvals', 'DELETE')` that the runtime
+application role does not have DELETE authority.
+
+#### Phase 5 compliance privilege hardening follow-up
+
+Published migrations `0005_compliance_scoring.py` and
+`0006_score_overrides.py` remain unchanged.
+
+Forward migration `0009_compliance_privilege_hardening.py` explicitly revokes
+`UPDATE` and `DELETE` on `assessment_score_snapshots` and `score_overrides`
+from `cloudguard_app` for existing environments that may have inherited prior
+broad table grants.
+
+The existing immutability triggers remain enabled, and the three regression
+tests covering score-override mutation and assessment-snapshot update/delete
+now pass under the runtime application role.
+
+A direct PostgreSQL privilege regression also verifies that `cloudguard_app`
+has neither `UPDATE` nor `DELETE` on `assessment_score_snapshots` or
+`score_overrides`.
+
 ### Phase 7.4 - Step Functions Task-Token Pause and Callback
 
 Deliver:

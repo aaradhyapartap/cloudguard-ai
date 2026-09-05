@@ -32,7 +32,11 @@ from app.models.approval import (
     PendingApproval,
 )
 from app.models.enums import ApprovalDecision, ApprovalStatus
-from app.repositories.database import tenant_session, untenanted_session
+from app.repositories.database import (
+    dispose_engine,
+    tenant_session,
+    untenanted_session,
+)
 from app.repositories.tables import Approval, Organization, User
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
@@ -210,7 +214,10 @@ async def seed_approval_test_data() -> object:
                 },
             )
 
-    yield
+    try:
+        yield
+    finally:
+        await dispose_engine()
 
 
 async def test_create_pending_round_trips_public_snapshot() -> None:
@@ -273,24 +280,43 @@ async def test_callback_context_is_hidden_while_pending() -> None:
 
 
 async def test_pending_queue_is_tenant_scoped() -> None:
+    org_a = uuid4()
+    org_b = uuid4()
+
+    async with untenanted_session() as session:
+        session.add_all(
+            [
+                Organization(
+                    id=org_a,
+                    name=f"Approval Queue Org A {org_a}",
+                    slug=f"approval-queue-a-{org_a}",
+                ),
+                Organization(
+                    id=org_b,
+                    name=f"Approval Queue Org B {org_b}",
+                    slug=f"approval-queue-b-{org_b}",
+                ),
+            ]
+        )
+
     approval_a = await _create_pending(
-        organization_id=ORG_A,
+        organization_id=org_a,
     )
     approval_b = await _create_pending(
-        organization_id=ORG_B,
+        organization_id=org_b,
     )
 
-    async with tenant_session(ORG_A) as session:
+    async with tenant_session(org_a) as session:
         repo = SQLAlchemyApprovalRepository(session)
         queue_a = await repo.list_pending(
-            organization_id=ORG_A,
+            organization_id=org_a,
             limit=100,
         )
 
-    async with tenant_session(ORG_B) as session:
+    async with tenant_session(org_b) as session:
         repo = SQLAlchemyApprovalRepository(session)
         queue_b = await repo.list_pending(
-            organization_id=ORG_B,
+            organization_id=org_b,
             limit=100,
         )
 
@@ -299,7 +325,6 @@ async def test_pending_queue_is_tenant_scoped() -> None:
 
     assert approval_a.id in ids_a
     assert approval_b.id not in ids_a
-
     assert approval_b.id in ids_b
     assert approval_a.id not in ids_b
 
