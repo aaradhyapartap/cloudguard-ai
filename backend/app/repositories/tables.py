@@ -569,6 +569,15 @@ class Approval(Base):
             "decided_at",
             postgresql_where=text("decision IS NOT NULL"),
         ),
+        Index(
+            "ix_approvals_callback_recovery",
+            "organization_id",
+            "callback_claimed_at",
+            "decided_at",
+            postgresql_where=text(
+                "status = 'decided' AND callback_delivered_at IS NULL"
+            ),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -646,6 +655,23 @@ class Approval(Base):
     task_token: Mapped[str] = mapped_column(
         Text,
         nullable=False,
+    )
+
+    callback_claim_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=True,
+    )
+    callback_claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    callback_delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    callback_attempt_count: Mapped[int] = mapped_column(
+        nullable=False,
+        server_default="0",
     )
 
     created_at: Mapped[datetime] = mapped_column(

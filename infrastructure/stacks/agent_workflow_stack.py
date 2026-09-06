@@ -1,16 +1,27 @@
-"""Phase 6 deterministic agent workflow infrastructure.
+"""Phase 7 deterministic agent workflow with human approval.
 
-The workflow is intentionally fixed:
+The workflow remains application-owned and fixed:
 
-    Research -> Risk -> Reviewer -> PASS / FAIL
+    Research -> Risk -> Reviewer
+        Reviewer FAIL -> terminal failure
+        Reviewer PASS -> human Approval wait
+            rejected -> terminal non-executing success
+            approved / modified -> Phase 7.5 execution boundary
 
-Agents cannot choose the next state dynamically. A Reviewer FAIL terminates the
-execution. Human approval and task-token waits belong to Phase 7.
+Agents cannot choose the next state dynamically and cannot resume the
+Step Functions execution. Only the trusted server-side callback path holds
+and uses the task token.
 """
 
 from __future__ import annotations
 
 import aws_cdk as cdk
+from aws_cdk import (
+    aws_events as events,
+)
+from aws_cdk import (
+    aws_events_targets as events_targets,
+)
 from aws_cdk import (
     aws_iam as iam,
 )
@@ -27,7 +38,7 @@ from constructs import Construct
 
 
 class AgentWorkflowStack(cdk.Stack):
-    """Fixed Research -> Risk -> Reviewer Step Functions workflow."""
+    """Fixed Research -> Risk -> Reviewer -> human Approval workflow."""
 
     def __init__(
         self,
@@ -106,6 +117,49 @@ class AgentWorkflowStack(cdk.Stack):
             },
         )
 
+        self.approval_creation_function = lambda_.DockerImageFunction(
+            self,
+            "ApprovalCreationFunction",
+            function_name=f"cloudguard-agent-approval-{environment_name}",
+            code=lambda_.DockerImageCode.from_image_asset(
+                "../backend",
+                cmd=["app.deployed_approval_creation_worker.handler"],
+            ),
+            timeout=cdk.Duration.minutes(1),
+            memory_size=512,
+            environment={
+                **common_environment,
+                "AWS_AURORA_CLUSTER_ARN": aurora_cluster_arn,
+                "AWS_AURORA_SECRET_ARN": aurora_secret_arn,
+                "DB_NAME": "cloudguard",
+            },
+        )
+
+        self.approval_callback_recovery_function = (
+            lambda_.DockerImageFunction(
+                self,
+                "ApprovalCallbackRecoveryFunction",
+                function_name=(
+                    f"cloudguard-approval-callback-recovery-"
+                    f"{environment_name}"
+                ),
+                code=lambda_.DockerImageCode.from_image_asset(
+                    "../backend",
+                    cmd=[
+                        "app.deployed_approval_callback_recovery_worker.handler"
+                    ],
+                ),
+                timeout=cdk.Duration.minutes(2),
+                memory_size=512,
+                environment={
+                    **common_environment,
+                    "AWS_AURORA_CLUSTER_ARN": aurora_cluster_arn,
+                    "AWS_AURORA_SECRET_ARN": aurora_secret_arn,
+                    "DB_NAME": "cloudguard",
+                },
+            )
+        )
+
         research_model_arn = self.format_arn(
             service="bedrock",
             resource="foundation-model",
@@ -163,6 +217,67 @@ class AgentWorkflowStack(cdk.Stack):
             )
         )
 
+        self.approval_creation_function.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=[
+                    "rds-data:BeginTransaction",
+                    "rds-data:ExecuteStatement",
+                    "rds-data:CommitTransaction",
+                    "rds-data:RollbackTransaction",
+                ],
+                resources=[aurora_cluster_arn],
+            )
+        )
+        self.approval_creation_function.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["secretsmanager:GetSecretValue"],
+                resources=[aurora_secret_arn],
+            )
+        )
+
+        self.approval_callback_recovery_function.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=[
+                    "rds-data:BeginTransaction",
+                    "rds-data:ExecuteStatement",
+                    "rds-data:CommitTransaction",
+                    "rds-data:RollbackTransaction",
+                ],
+                resources=[aurora_cluster_arn],
+            )
+        )
+        self.approval_callback_recovery_function.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["secretsmanager:GetSecretValue"],
+                resources=[aurora_secret_arn],
+            )
+        )
+        self.approval_callback_recovery_function.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["states:SendTaskSuccess"],
+                # Callback task tokens do not map to a resource-level ARN.
+                resources=["*"],
+            )
+        )
+
+        self.approval_callback_recovery_rule = events.Rule(
+            self,
+            "ApprovalCallbackRecoverySchedule",
+            schedule=events.Schedule.rate(
+                cdk.Duration.minutes(1)
+            ),
+        )
+        self.approval_callback_recovery_rule.add_target(
+            events_targets.LambdaFunction(
+                self.approval_callback_recovery_function
+            )
+        )
+
         normalize_input = sfn.Pass(
             self,
             "NormalizeWorkflowInput",
@@ -198,9 +313,37 @@ class AgentWorkflowStack(cdk.Stack):
             payload=sfn.TaskInput.from_json_path_at("$"),
         )
 
-        workflow_succeeded = sfn.Succeed(
+        approval_wait = sfn_tasks.LambdaInvoke(
             self,
-            "WorkflowSucceeded",
+            "WaitForManagerApproval",
+            lambda_function=self.approval_creation_function,
+            integration_pattern=sfn.IntegrationPattern.WAIT_FOR_TASK_TOKEN,
+            payload=sfn.TaskInput.from_object(
+                {
+                    "execution_id": sfn.JsonPath.string_at("$.execution_id"),
+                    "correlation_id": sfn.JsonPath.string_at("$.correlation_id"),
+                    "question": sfn.JsonPath.string_at("$.question"),
+                    "principal": sfn.JsonPath.object_at("$.principal"),
+                    "research": sfn.JsonPath.object_at("$.research"),
+                    "reviewer": sfn.JsonPath.object_at("$.reviewer"),
+                    "task_token": sfn.JsonPath.task_token,
+                }
+            ),
+            result_path="$.approval_decision",
+        )
+
+        workflow_approved = sfn.Succeed(
+            self,
+            "WorkflowApproved",
+            comment=(
+                "Human approval completed. Bounded action execution is added in Phase 7.5."
+            ),
+        )
+
+        workflow_rejected = sfn.Succeed(
+            self,
+            "WorkflowRejected",
+            comment="Manager rejected the proposed action; no action is executed.",
         )
 
         reviewer_failed = sfn.Fail(
@@ -217,6 +360,13 @@ class AgentWorkflowStack(cdk.Stack):
             cause="A bounded agent task failed.",
         )
 
+        approval_wait_failed = sfn.Fail(
+            self,
+            "ApprovalWaitFailed",
+            error="ApprovalWaitFailed",
+            cause="The human approval wait task failed.",
+        )
+
         for task in (research, risk, reviewer):
             task.add_catch(
                 agent_execution_failed,
@@ -224,13 +374,47 @@ class AgentWorkflowStack(cdk.Stack):
                 result_path="$.ErrorDetails",
             )
 
+        approval_wait.add_catch(
+            approval_wait_failed,
+            errors=["States.ALL"],
+            result_path="$.ErrorDetails",
+        )
+
+        approval_decision = sfn.Choice(
+            self,
+            "ApprovalDecision",
+        )
+        approval_decision.when(
+            sfn.Condition.string_equals(
+                "$.approval_decision.decision",
+                "rejected",
+            ),
+            workflow_rejected,
+        )
+        approval_decision.when(
+            sfn.Condition.or_(
+                sfn.Condition.string_equals(
+                    "$.approval_decision.decision",
+                    "approved",
+                ),
+                sfn.Condition.string_equals(
+                    "$.approval_decision.decision",
+                    "modified",
+                ),
+            ),
+            workflow_approved,
+        )
+        approval_decision.otherwise(approval_wait_failed)
+
+        approval_wait.next(approval_decision)
+
         reviewer_decision = sfn.Choice(
             self,
             "ReviewerDecision",
         )
         reviewer_decision.when(
             sfn.Condition.string_equals("$.reviewer.decision", "PASS"),
-            workflow_succeeded,
+            approval_wait,
         )
         reviewer_decision.otherwise(reviewer_failed)
 
@@ -247,7 +431,7 @@ class AgentWorkflowStack(cdk.Stack):
             state_machine_name=f"cloudguard-agent-workflow-{environment_name}",
             definition_body=sfn.DefinitionBody.from_chainable(definition),
             state_machine_type=sfn.StateMachineType.STANDARD,
-            timeout=cdk.Duration.minutes(10),
+            timeout=cdk.Duration.days(365),
             tracing_enabled=True,
         )
 
@@ -262,5 +446,5 @@ class AgentWorkflowStack(cdk.Stack):
             self,
             "AgentWorkflowStateMachineArn",
             value=self.state_machine.state_machine_arn,
-            description="Phase 6 deterministic agent workflow state machine ARN",
+            description="Phase 7 human-approval agent workflow state machine ARN",
         )

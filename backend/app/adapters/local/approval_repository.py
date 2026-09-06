@@ -190,6 +190,13 @@ class SQLAlchemyApprovalRepository(ApprovalRepository):
         if row is None or row.decision is None:
             return None
 
+        return self._to_callback_context(row)
+
+    @staticmethod
+    def _to_callback_context(row: Approval) -> ApprovalCallbackContext:
+        if row.decision is None:
+            raise ValueError("Callback Approval is missing its human decision.")
+
         effective_action: ApprovalAction | None
 
         if row.decision is ApprovalDecision.APPROVED:
