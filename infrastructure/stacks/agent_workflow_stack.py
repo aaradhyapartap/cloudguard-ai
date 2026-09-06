@@ -6,7 +6,7 @@ The workflow remains application-owned and fixed:
         Reviewer FAIL -> terminal failure
         Reviewer PASS -> human Approval wait
             rejected -> terminal non-executing success
-            approved / modified -> Phase 7.5 execution boundary
+            approved / modified -> bounded approved-action execution
 
 Agents cannot choose the next state dynamically and cannot resume the
 Step Functions execution. Only the trusted server-side callback path holds
@@ -160,6 +160,31 @@ class AgentWorkflowStack(cdk.Stack):
             )
         )
 
+        self.approved_action_execution_function = (
+            lambda_.DockerImageFunction(
+                self,
+                "ApprovedActionExecutionFunction",
+                function_name=(
+                    f"cloudguard-approved-action-execution-"
+                    f"{environment_name}"
+                ),
+                code=lambda_.DockerImageCode.from_image_asset(
+                    "../backend",
+                    cmd=[
+                        "app.deployed_approved_action_execution_worker.handler"
+                    ],
+                ),
+                timeout=cdk.Duration.minutes(2),
+                memory_size=512,
+                environment={
+                    **common_environment,
+                    "AWS_AURORA_CLUSTER_ARN": aurora_cluster_arn,
+                    "AWS_AURORA_SECRET_ARN": aurora_secret_arn,
+                    "DB_NAME": "cloudguard",
+                },
+            )
+        )
+
         research_model_arn = self.format_arn(
             service="bedrock",
             resource="foundation-model",
@@ -278,6 +303,26 @@ class AgentWorkflowStack(cdk.Stack):
             )
         )
 
+        self.approved_action_execution_function.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=[
+                    "rds-data:BeginTransaction",
+                    "rds-data:ExecuteStatement",
+                    "rds-data:CommitTransaction",
+                    "rds-data:RollbackTransaction",
+                ],
+                resources=[aurora_cluster_arn],
+            )
+        )
+        self.approved_action_execution_function.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["secretsmanager:GetSecretValue"],
+                resources=[aurora_secret_arn],
+            )
+        )
+
         normalize_input = sfn.Pass(
             self,
             "NormalizeWorkflowInput",
@@ -332,11 +377,30 @@ class AgentWorkflowStack(cdk.Stack):
             result_path="$.approval_decision",
         )
 
-        workflow_approved = sfn.Succeed(
+        execute_approved_action = sfn_tasks.LambdaInvoke(
             self,
-            "WorkflowApproved",
+            "ExecuteApprovedAction",
+            lambda_function=self.approved_action_execution_function,
+            payload_response_only=True,
+            payload=sfn.TaskInput.from_object(
+                {
+                    "execution_id": sfn.JsonPath.string_at(
+                        "$.execution_id"
+                    ),
+                    "principal": sfn.JsonPath.object_at(
+                        "$.principal"
+                    ),
+                }
+            ),
+            result_path="$.execution_result",
+        )
+
+        workflow_executed = sfn.Succeed(
+            self,
+            "WorkflowExecuted",
             comment=(
-                "Human approval completed. Bounded action execution is added in Phase 7.5."
+                "The exact human-approved bounded action "
+                "completed successfully."
             ),
         )
 
@@ -367,6 +431,16 @@ class AgentWorkflowStack(cdk.Stack):
             cause="The human approval wait task failed.",
         )
 
+        approved_action_execution_failed = sfn.Fail(
+            self,
+            "ApprovedActionExecutionFailed",
+            error="ApprovedActionExecutionFailed",
+            cause=(
+                "The persisted human-approved bounded action "
+                "could not be executed."
+            ),
+        )
+
         for task in (research, risk, reviewer):
             task.add_catch(
                 agent_execution_failed,
@@ -378,6 +452,15 @@ class AgentWorkflowStack(cdk.Stack):
             approval_wait_failed,
             errors=["States.ALL"],
             result_path="$.ErrorDetails",
+        )
+
+        execute_approved_action.add_catch(
+            approved_action_execution_failed,
+            errors=["States.ALL"],
+            result_path="$.ErrorDetails",
+        )
+        execute_approved_action.next(
+            workflow_executed
         )
 
         approval_decision = sfn.Choice(
@@ -402,7 +485,7 @@ class AgentWorkflowStack(cdk.Stack):
                     "modified",
                 ),
             ),
-            workflow_approved,
+            execute_approved_action,
         )
         approval_decision.otherwise(approval_wait_failed)
 

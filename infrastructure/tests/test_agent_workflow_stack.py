@@ -1,4 +1,4 @@
-﻿"""Template assertions for the deterministic Phase 7 agent workflow."""
+"""Template assertions for the deterministic Phase 7 agent workflow."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def _definition_text(template: assertions.Template) -> str:
     ).replace("\\", "")
 
 
-def test_agent_workflow_has_five_scoped_lambdas(
+def test_agent_workflow_has_six_scoped_lambdas(
     agent_workflow_template: assertions.Template,
 ) -> None:
     expected_commands = (
@@ -31,6 +31,7 @@ def test_agent_workflow_has_five_scoped_lambdas(
         "app.deployed_reviewer_agent_worker.handler",
         "app.deployed_approval_creation_worker.handler",
         "app.deployed_approval_callback_recovery_worker.handler",
+        "app.deployed_approved_action_execution_worker.handler",
     )
 
     for command in expected_commands:
@@ -130,15 +131,17 @@ def test_human_rejection_is_non_executing_terminal_path(
     assert '"WorkflowRejected"' in definition
 
 
-def test_approved_and_modified_stop_at_phase7_5_execution_boundary(
+def test_approved_and_modified_enter_bounded_execution_boundary(
     agent_workflow_template: assertions.Template,
 ) -> None:
     definition = _definition_text(agent_workflow_template)
 
     assert '"StringEquals":"approved"' in definition
     assert '"StringEquals":"modified"' in definition
-    assert '"Next":"WorkflowApproved"' in definition
-    assert '"WorkflowApproved"' in definition
+    assert '"Next":"ExecuteApprovedAction"' in definition
+    assert '"ExecuteApprovedAction"' in definition
+    assert '"WorkflowExecuted"' in definition
+    assert '"ApprovedActionExecutionFailed"' in definition
 
 
 def test_approval_lambdas_have_data_api_permissions(
@@ -195,3 +198,72 @@ def test_agent_tasks_fail_closed(
     assert "AgentExecutionFailed" in definition
     assert "ApprovalWaitFailed" in definition
     assert "States.ALL" in definition
+
+
+def test_execution_task_forwards_no_action_authority(
+    agent_workflow_template: assertions.Template,
+) -> None:
+    definition = _definition_text(agent_workflow_template)
+
+    assert '"ExecuteApprovedAction"' in definition
+    assert '"execution_id.$":"$.execution_id"' in definition
+    assert '"principal.$":"$.principal"' in definition
+
+    # The trusted worker reloads the action from Aurora.
+    assert '"effective_action.$"' not in definition
+    assert '"action.$"' not in definition
+
+
+def test_execution_lambda_has_scoped_aurora_permissions(
+    agent_workflow_template: assertions.Template,
+) -> None:
+    template = agent_workflow_template.to_json()
+    resources = template["Resources"]
+
+    execution_role = None
+
+    for resource in resources.values():
+        if resource.get("Type") != "AWS::Lambda::Function":
+            continue
+
+        properties = resource.get("Properties", {})
+        image_config = properties.get("ImageConfig", {})
+
+        if image_config.get("Command") != [
+            "app.deployed_approved_action_execution_worker.handler"
+        ]:
+            continue
+
+        role = properties["Role"]
+        execution_role = role["Fn::GetAtt"][0]
+        break
+
+    assert execution_role is not None
+
+    role_policies = []
+
+    for resource in resources.values():
+        if resource.get("Type") != "AWS::IAM::Policy":
+            continue
+
+        properties = resource.get("Properties", {})
+        roles = properties.get("Roles", [])
+
+        if {"Ref": execution_role} in roles:
+            role_policies.append(
+                properties["PolicyDocument"]
+            )
+
+    serialized = json.dumps(
+        role_policies,
+        separators=(",", ":"),
+    )
+
+    assert "rds-data:BeginTransaction" in serialized
+    assert "rds-data:ExecuteStatement" in serialized
+    assert "rds-data:CommitTransaction" in serialized
+    assert "rds-data:RollbackTransaction" in serialized
+    assert "secretsmanager:GetSecretValue" in serialized
+
+    # Workflow-resume authority belongs only to callback recovery.
+    assert "states:SendTaskSuccess" not in serialized
