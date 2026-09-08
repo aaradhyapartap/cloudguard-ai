@@ -39,21 +39,11 @@ jobs:
         run: cd backend && ruff check .
       - name: Type check
         run: cd backend && mypy app
-      - name: Migrate
-        run: cd backend && alembic upgrade head
-        env:
-          DB_HOST: localhost
-
-      # Seed the same organizations/users used by local development and
-      # authenticated integration tests.
-      - name: Seed database
-        run: python scripts/seed_data.py
-        env:
-          DB_HOST: localhost
 
       # The POSTGRES_USER created by the service container is a privileged
       # database role. RLS must be tested through an ordinary application role,
-      # otherwise PostgreSQL can bypass row-level policies.
+      # otherwise PostgreSQL can bypass row-level policies. Create the role
+      # before migration so migrations remain the sole owners of table grants.
       - name: Create application database role
         env:
           PGPASSWORD: cloudguard
@@ -78,13 +68,19 @@ jobs:
 
           GRANT CONNECT ON DATABASE cloudguard TO cloudguard_app;
           GRANT USAGE ON SCHEMA public TO cloudguard_app;
-          GRANT SELECT, INSERT, UPDATE, DELETE
-            ON ALL TABLES IN SCHEMA public
-            TO cloudguard_app;
-          GRANT USAGE, SELECT
-            ON ALL SEQUENCES IN SCHEMA public
-            TO cloudguard_app;
           SQL
+
+      - name: Migrate
+        run: cd backend && alembic upgrade head
+        env:
+          DB_HOST: localhost
+
+      # Seed the same organizations/users used by local development and
+      # authenticated integration tests through the privileged setup role.
+      - name: Seed database
+        run: python scripts/seed_data.py
+        env:
+          DB_HOST: localhost
 
       # Isolation tests run against real PostgreSQL because Row-Level Security
       # does not exist in SQLite. They deliberately use the non-superuser role.

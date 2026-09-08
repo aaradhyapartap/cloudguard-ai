@@ -18,13 +18,13 @@ from app.models.ai import VectorRecord
 from app.models.enums import Role
 from app.models.principal import Principal
 from app.models.rag import RAGRequest
-from app.repositories.database import tenant_session, untenanted_session
+from app.repositories.database import tenant_session
 from app.services.rag import RAGService
 from app.services.retrieval import RetrievalService
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from conftest import bearer  # type: ignore[import-not-found]
+from conftest import bearer, database_admin_session  # type: ignore[import-not-found]
 
 pytestmark = pytest.mark.integration
 
@@ -52,7 +52,7 @@ async def seed_rag_test_corpus() -> object:
     _skip_without_database()
 
     # Seed organizations
-    async with untenanted_session() as session:
+    async with database_admin_session() as session:
         for org_id, label in ((ORG_A, "rag-acme"), (ORG_B, "rag-globex")):
             await session.execute(
                 text(

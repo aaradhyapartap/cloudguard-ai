@@ -35,11 +35,13 @@ from app.models.enums import ApprovalDecision, ApprovalStatus
 from app.repositories.database import (
     dispose_engine,
     tenant_session,
-    untenanted_session,
 )
 from app.repositories.tables import Approval, Organization, User
+from app.services.approved_action_projection import ApprovedActionProjector
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
+
+from conftest import database_admin_session  # type: ignore[import-not-found]
 
 pytestmark = pytest.mark.integration
 
@@ -100,6 +102,7 @@ async def _create_pending(
     organization_id: UUID,
     workflow_execution_id: str | None = None,
     task_token: str | None = None,
+    proposed_action: ApprovalAction | None = None,
 ) -> PendingApproval:
     async with tenant_session(organization_id) as session:
         repo = SQLAlchemyApprovalRepository(session)
@@ -111,7 +114,7 @@ async def _create_pending(
                 or f"execution-{uuid4()}"
             ),
             recommendation_id=uuid4(),
-            proposed_action=_action(),
+            proposed_action=proposed_action or _action(),
             evidence=_evidence(),
             score_context=_score_context(),
             agent_trace_ids=(
@@ -125,12 +128,107 @@ async def _create_pending(
         )
 
 
+async def _mark_callback_delivered(
+    approval: DecidedApproval,
+) -> None:
+    claim_id = uuid4()
+
+    async with tenant_session(approval.organization_id) as session:
+        claimed = await session.execute(
+            text(
+                """
+                UPDATE approvals
+                SET
+                    callback_claim_id = :claim_id,
+                    callback_claimed_at = now(),
+                    callback_attempt_count = callback_attempt_count + 1,
+                    updated_at = now()
+                WHERE organization_id = :organization_id
+                  AND id = :approval_id
+                  AND status = 'decided'
+                  AND callback_delivered_at IS NULL
+                  AND callback_claimed_at IS NULL
+                RETURNING id
+                """
+            ),
+            {
+                "claim_id": claim_id,
+                "organization_id": approval.organization_id,
+                "approval_id": approval.id,
+            },
+        )
+
+        assert claimed.scalar_one_or_none() == approval.id
+
+    async with tenant_session(approval.organization_id) as session:
+        delivered = await session.execute(
+            text(
+                """
+                UPDATE approvals
+                SET
+                    callback_claim_id = NULL,
+                    callback_claimed_at = NULL,
+                    callback_delivered_at = now(),
+                    updated_at = now()
+                WHERE organization_id = :organization_id
+                  AND id = :approval_id
+                  AND status = 'decided'
+                  AND callback_delivered_at IS NULL
+                  AND callback_claim_id = :claim_id
+                RETURNING id
+                """
+            ),
+            {
+                "claim_id": claim_id,
+                "organization_id": approval.organization_id,
+                "approval_id": approval.id,
+            },
+        )
+
+        assert delivered.scalar_one_or_none() == approval.id
+
+
+async def _advance_to_execution_failed(
+    approval: DecidedApproval,
+) -> None:
+    await _mark_callback_delivered(approval)
+    projection = ApprovedActionProjector.project(approval)
+
+    async with tenant_session(approval.organization_id) as session:
+        updated = await session.execute(
+            text(
+                """
+                UPDATE approvals
+                SET
+                    status = 'execution_failed',
+                    execution_idempotency_key = :idempotency_key,
+                    execution_completed_at = now(),
+                    execution_reference = NULL,
+                    execution_error_code = 'unsupported_action',
+                    updated_at = now()
+                WHERE organization_id = :organization_id
+                  AND id = :approval_id
+                  AND status = 'decided'
+                  AND callback_delivered_at IS NOT NULL
+                RETURNING id
+                """
+            ),
+            {
+                "idempotency_key": projection.idempotency_key,
+                "organization_id": approval.organization_id,
+                "approval_id": approval.id,
+            },
+        )
+
+        assert updated.scalar_one_or_none() == approval.id
+
+
 @pytest.fixture(scope="module", autouse=True)
 async def seed_approval_test_data() -> object:
     _skip_without_database()
 
     # Organizations are global catalog rows and intentionally have no RLS.
-    async with untenanted_session() as session:
+    async with database_admin_session() as session:
         for org_id, name, slug in (
             (ORG_A, "Approval Integration Org A", "approval-integration-a"),
             (ORG_B, "Approval Integration Org B", "approval-integration-b"),
@@ -283,7 +381,7 @@ async def test_pending_queue_is_tenant_scoped() -> None:
     org_a = uuid4()
     org_b = uuid4()
 
-    async with untenanted_session() as session:
+    async with database_admin_session() as session:
         session.add_all(
             [
                 Organization(
@@ -627,8 +725,17 @@ async def test_decision_metadata_is_immutable_after_decision() -> None:
 
 
 async def test_decided_may_advance_to_execution_succeeded() -> None:
+    workflow_execution_id = uuid4()
+    action = ApprovalAction(
+        action_type="create_security_review",
+        resource_type="workflow_execution",
+        resource_id=workflow_execution_id,
+        summary="Create the exact Manager-approved security review.",
+    )
     pending = await _create_pending(
         organization_id=ORG_A,
+        workflow_execution_id=str(workflow_execution_id),
+        proposed_action=action,
     )
 
     async with tenant_session(ORG_A) as session:
@@ -647,17 +754,71 @@ async def test_decided_may_advance_to_execution_succeeded() -> None:
 
         assert decided is not None
 
+    await _mark_callback_delivered(decided)
+    projection = ApprovedActionProjector.project(decided)
+    review_id = uuid4()
+
     async with tenant_session(ORG_A) as session:
         await session.execute(
             text(
                 """
-                UPDATE approvals
-                SET status = 'execution_succeeded'
-                WHERE id = :approval_id
+                INSERT INTO security_reviews (
+                    id,
+                    organization_id,
+                    approval_id,
+                    workflow_execution_id,
+                    action_type,
+                    summary,
+                    idempotency_key
+                )
+                VALUES (
+                    :review_id,
+                    :organization_id,
+                    :approval_id,
+                    :workflow_execution_id,
+                    :action_type,
+                    :summary,
+                    :idempotency_key
+                )
                 """
             ),
-            {"approval_id": pending.id},
+            {
+                "review_id": review_id,
+                "organization_id": ORG_A,
+                "approval_id": pending.id,
+                "workflow_execution_id": workflow_execution_id,
+                "action_type": action.action_type,
+                "summary": action.summary,
+                "idempotency_key": projection.idempotency_key,
+            },
         )
+        updated = await session.execute(
+            text(
+                """
+                UPDATE approvals
+                SET
+                    status = 'execution_succeeded',
+                    execution_idempotency_key = :idempotency_key,
+                    execution_completed_at = now(),
+                    execution_reference = :execution_reference,
+                    execution_error_code = NULL,
+                    updated_at = now()
+                WHERE organization_id = :organization_id
+                  AND id = :approval_id
+                  AND status = 'decided'
+                  AND callback_delivered_at IS NOT NULL
+                RETURNING id
+                """
+            ),
+            {
+                "idempotency_key": projection.idempotency_key,
+                "execution_reference": f"security-review:{review_id}",
+                "organization_id": ORG_A,
+                "approval_id": pending.id,
+            },
+        )
+
+        assert updated.scalar_one_or_none() == pending.id
 
     async with tenant_session(ORG_A) as session:
         repo = SQLAlchemyApprovalRepository(session)
@@ -691,17 +852,7 @@ async def test_terminal_approval_does_not_return_callback_context() -> None:
 
         assert decided is not None
 
-    async with tenant_session(ORG_A) as session:
-        await session.execute(
-            text(
-                """
-                UPDATE approvals
-                SET status = 'execution_succeeded'
-                WHERE id = :approval_id
-                """
-            ),
-            {"approval_id": pending.id},
-        )
+    await _advance_to_execution_failed(decided)
 
     async with tenant_session(ORG_A) as session:
         repo = SQLAlchemyApprovalRepository(session)
@@ -735,17 +886,7 @@ async def test_terminal_execution_state_rejects_further_mutation() -> None:
 
         assert decided is not None
 
-    async with tenant_session(ORG_A) as session:
-        await session.execute(
-            text(
-                """
-                UPDATE approvals
-                SET status = 'execution_failed'
-                WHERE id = :approval_id
-                """
-            ),
-            {"approval_id": pending.id},
-        )
+    await _advance_to_execution_failed(decided)
 
     async with tenant_session(ORG_A) as session:
         with pytest.raises(

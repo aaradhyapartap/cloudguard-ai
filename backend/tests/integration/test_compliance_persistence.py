@@ -16,10 +16,7 @@ from app.models.enums import (
     RiskClassification,
     Role,
 )
-from app.repositories.database import (
-    tenant_session,
-    untenanted_session,
-)
+from app.repositories.database import tenant_session
 from app.repositories.tables import (
     AssessmentScoreSnapshot,
     ComplianceAssessment,
@@ -34,6 +31,8 @@ from app.repositories.tables import (
 )
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
+
+from conftest import database_admin_session  # type: ignore[import-not-found]
 
 pytestmark = pytest.mark.integration
 
@@ -60,7 +59,7 @@ async def seed_compliance_test_data() -> object:
     _skip_without_database()
 
     # Untenanted: Seed organizations, global framework, and controls
-    async with untenanted_session() as session:
+    async with database_admin_session() as session:
         for org_id, label in ((ORG_A, "alpha-corp"), (ORG_B, "beta-corp")):
             org = Organization(
                 id=org_id,
@@ -79,7 +78,7 @@ async def seed_compliance_test_data() -> object:
         session.add(fw)
         await session.commit()
 
-    async with untenanted_session() as session:
+    async with database_admin_session() as session:
         c1 = ComplianceControl(
             id=CONTROL_1_ID,
             framework_id=FRAMEWORK_ID,
@@ -406,7 +405,7 @@ async def test_delete_chunk_sets_chunk_id_null_in_evidence_reference() -> None:
         assert ev_before.organization_id == ORG_A
 
     # Delete the chunk
-    async with tenant_session(ORG_A) as session:
+    async with database_admin_session() as session:
         chunk_to_delete = await session.get(DocumentChunk, chunk_id)
         assert chunk_to_delete is not None
         await session.delete(chunk_to_delete)

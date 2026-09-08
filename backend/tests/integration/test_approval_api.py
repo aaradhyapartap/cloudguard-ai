@@ -16,12 +16,13 @@ from app.models.approval import (
 )
 from app.models.enums import ApprovalDecision, ApprovalStatus
 from app.models.principal import Principal
-from app.repositories.database import dispose_engine, tenant_session, untenanted_session
+from app.repositories.database import dispose_engine, tenant_session
 from fastapi.testclient import TestClient
 from sqlalchemy import text as sql_text
 
 from conftest import (  # type: ignore[import-not-found]
     bearer,
+    database_admin_session,
     skip_without_database,
 )
 
@@ -96,7 +97,7 @@ async def _create_pending_and_dispose(
     task_token: str,
 ):
     try:
-        async with untenanted_session() as session:
+        async with database_admin_session() as session:
             await session.execute(
                 sql_text(
                     """

@@ -90,6 +90,7 @@ def production_settings(**overrides: object) -> Settings:
         "llm_provider": "bedrock",
         "identity_provider": "cognito",
         "cognito": {"user_pool_id": "us-east-1_Pool", "client_id": "client-123"},
+        "cors_origins": ["https://console.cloudguard.example"],
     }
     base.update(overrides)
     return Settings(**base)  # type: ignore[arg-type]
@@ -133,6 +134,35 @@ def test_cognito_issuer_is_derived_from_pool() -> None:
 def test_cors_origins_accept_a_comma_separated_env_value() -> None:
     settings = Settings(cors_origins="http://a.test, http://b.test")
     assert settings.cors_origins == ["http://a.test", "http://b.test"]
+
+
+@pytest.mark.parametrize(
+    "origins",
+    [
+        [],
+        ["*"],
+        ["https://console.example/path"],
+        ["https://user:password@console.example"],
+        ["https://console.example:not-a-port"],
+        ["https://console example"],
+        ["javascript:alert(1)"],
+    ],
+)
+def test_cors_origins_reject_non_origin_values(origins: list[str]) -> None:
+    with pytest.raises(ValidationError, match=r"cors_origins|CORS origins"):
+        Settings(cors_origins=origins)
+
+
+def test_cors_origins_are_deduplicated() -> None:
+    settings = Settings(
+        cors_origins=["https://console.example", "https://console.example"]
+    )
+    assert settings.cors_origins == ["https://console.example"]
+
+
+def test_production_rejects_insecure_cors_origin() -> None:
+    with pytest.raises(ValidationError, match="prod CORS origins must use https"):
+        production_settings(cors_origins=["http://console.cloudguard.example"])
 
 
 def test_database_dsn_is_built_from_parts() -> None:

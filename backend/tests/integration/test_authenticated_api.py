@@ -81,7 +81,7 @@ ROUTE_MATRIX: dict[tuple[str, str], dict[Role, int]] = {
     ("POST", "/api/v1/rag/query"): {
         Role.ANALYST: 200,
         Role.MANAGER: 200,
-        Role.ADMIN: 200,
+        Role.ADMIN: 403,
     },
     ("POST", "/api/v1/compliance/assessments"): {
         Role.ANALYST: 404,

@@ -20,6 +20,8 @@ from app.repositories.database import (
 )
 from sqlalchemy import text
 
+from conftest import database_admin_session  # type: ignore[import-not-found]
+
 pytestmark = pytest.mark.integration
 
 ORG_A = uuid4()
@@ -53,7 +55,7 @@ async def seed_vector_test_corpus() -> object:
     _skip_without_database()
 
     # Seed organizations
-    async with untenanted_session() as session:
+    async with database_admin_session() as session:
         for org_id, label in ((ORG_A, "vector-acme"), (ORG_B, "vector-globex")):
             await session.execute(
                 text(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from app.core.config import Environment, Settings
 from app.main import create_app
 from fastapi.testclient import TestClient
@@ -62,6 +63,53 @@ def test_security_headers_are_present(client: TestClient) -> None:
 
 def test_every_response_carries_a_request_id(client: TestClient) -> None:
     assert client.get("/api/v1/health").headers["x-request-id"].startswith("req_")
+
+
+def test_bounded_client_request_id_is_preserved(client: TestClient) -> None:
+    response = client.get(
+        "/api/v1/health",
+        headers={"x-request-id": "client.trace-123:attempt_2"},
+    )
+    assert response.headers["x-request-id"] == "client.trace-123:attempt_2"
+
+
+@pytest.mark.parametrize(
+    "request_id",
+    [
+        "contains whitespace",
+        ".cannot-start-with-punctuation",
+        "x" * 129,
+    ],
+)
+def test_unsafe_client_request_id_is_replaced(
+    client: TestClient,
+    request_id: str,
+) -> None:
+    response = client.get(
+        "/api/v1/health",
+        headers={"x-request-id": request_id},
+    )
+    generated = response.headers["x-request-id"]
+    assert generated.startswith("req_")
+    assert generated != request_id
+
+
+def test_cors_does_not_allow_retired_dev_principal_header(
+    client: TestClient,
+) -> None:
+    response = client.options(
+        "/api/v1/health",
+        headers={
+            "origin": "http://localhost:3000",
+            "access-control-request-method": "GET",
+            "access-control-request-headers": "x-dev-principal",
+        },
+    )
+    assert response.status_code == 400
+    assert "x-dev-principal" not in response.headers.get(
+        "access-control-allow-headers",
+        "",
+    ).lower()
 
 
 def test_dev_login_route_exists_when_local(client: TestClient) -> None:

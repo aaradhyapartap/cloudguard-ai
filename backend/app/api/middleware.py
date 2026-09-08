@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.logging import bind_request_context, get_logger
-from app.utilities.ids import new_request_id
+from app.utilities.ids import resolve_request_id
 
 logger = get_logger(__name__)
 
@@ -26,7 +26,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next: RequestHandler) -> Response:
-        request_id = request.headers.get("x-request-id") or new_request_id()
+        request_id = resolve_request_id(request.headers.get("x-request-id"))
         request.state.request_id = request_id
         bind_request_context(request_id=request_id, route=request.url.path)
 

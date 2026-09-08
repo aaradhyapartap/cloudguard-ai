@@ -6,24 +6,27 @@ This repository is developed incrementally with strict architectural and validat
 
 The current Git branch and repository contents are the source of truth.
 
-Do not merge or copy older Phase 3 implementations over the current branch without reviewing differences first.
+Do not merge or copy older phase implementations over the current branch without reviewing differences first.
 
 Do not silently replace accepted architectural decisions.
 
 ## Current phase
 
-Current implementation phase: Phase 4 - Retrieval-Augmented Generation (Complete).
-Next implementation phase: Phase 5 - Deterministic Compliance & Risk Scoring.
+Current implementation phase: Phase 8 - Security Hardening.
 
-Phase 4 completed vector persistence, embedding generation lifecycle, tenant-isolated retrieval orchestration, and RAG answer generation.
+Phases 1-7 are complete. Phase 8 starts from published commit
+`fb9523064cf9b1b7b22d9427026d2b279dda67d7` on `phase-8-security`.
 
-Phase 5 must not begin until the Phase 4 validation checkpoint is green and reviewed.
+Work one coherent Phase 8 subphase at a time. Do not reopen Phase 7 feature
+development unless a real defect is found. See
+`docs/development/current-task.md` for the active security plan and carry-forward
+items.
 
 ## Architecture constraints
 
 Follow the accepted ADRs and Phase 0 architecture.
 
-Important Phase 3 constraints:
+Important deployed-architecture constraints:
 
 - Presigned document uploads use S3.
 - Event-driven ingestion is orchestrated through EventBridge and Step Functions.
@@ -62,6 +65,13 @@ The AWS adapter must preserve the same tenant isolation behavior as the SQLAlche
 - Do not trust organization_id supplied by unscoped database queries.
 - Keep tenant filtering in application SQL even when RLS is active.
 - Do not log secrets, tokens, database passwords, or document contents.
+- Treat uploaded/retrieved content and model output as untrusted data.
+- Models never supply identity, tenant, clearance, approval, score, or action authority.
+- Only Manager may decide approvals; Admin and Analyst may not.
+- Keep Step Functions task tokens out of HTTP contracts, public models, audit payloads, and logs.
+- Do not claim distributed exactly-once callback delivery.
+- Do not add direct PostgreSQL/DynamoDB audit dual writes.
+- Do not change published migrations; use a new forward migration.
 
 ## Coding rules
 
@@ -110,7 +120,7 @@ After behavioral changes:
 
 run focused pytest tests for the affected feature.
 
-Before any Phase 3 commit:
+Before any Phase 8 commit:
 
 python -m ruff check .
 python -m mypy app
@@ -136,25 +146,22 @@ Do not commit if any required validation fails.
 - Do not commit generated secrets, .env files, caches, build artifacts, or temporary extraction directories.
 - Do not push if tests are failing.
 
-## Phase 4 completed work
+## Completed checkpoint through Phase 7
 
-1. pgvector schema, migrations, and HNSW cosine index.
-2. Local SQLAlchemyVectorStore and deployed AuroraDataAPIVectorStore.
-3. Decoupled EmbeddingProvider and LLMProvider boundaries.
-4. Titan Embed Text v2 Bedrock embedding provider.
-5. Ingestion worker embedding generation + vector persistence before READY.
-6. Tenant-isolated, clearance-bounded RetrievalService.
-7. Grounded, prompt-injection resistant RAGService with deterministic citations.
-8. Bedrock Converse LLM generation adapter with fail-closed validation.
-9. Retrieval and RAG API endpoints guarded by DOCUMENT_READ.
-10. Comprehensive unit and PostgreSQL integration tests with RLS.
+1. Authenticated Principal, centralized RBAC, and tenant RLS.
+2. Document ingestion, pgvector retrieval, and deterministic citations.
+3. Deterministic compliance/risk scoring with bounded model proposals.
+4. Fixed Research -> Risk -> Reviewer workflow and fail-closed tool registry.
+5. Genuine Manager approval pause, internal callback recovery, immutable approval
+   audit, and one bounded approved action.
 
-## Phase 5 roadmap (Deterministic Compliance & Risk Scoring)
+## Phase 8 priorities
 
-1. Compliance evaluation and risk estimation domain models.
-2. Versioned deterministic Python risk scoring engine.
-3. Bounded LLM structured extraction for component estimates.
-4. Audit trail and domain events for evaluations.
+1. Threat model and security baseline.
+2. Prompt-injection defenses and Bedrock Guardrails.
+3. PII, context, output, and logging protections.
+4. Central rate limiting, ingestion bounds, and abuse protection.
+5. Blocking security regression and CI gates.
 
 ## Working style for coding agents
 
@@ -175,6 +182,7 @@ Before finishing:
 1. Run full validation appropriate to the slice.
 2. Show git diff --stat.
 3. Show remaining known risks or TODOs.
-4. Do not claim Phase 3 is complete unless the Phase 3 acceptance criteria are actually satisfied.
+4. Do not claim Phase 8 is complete until all five subphases and their acceptance
+   criteria are satisfied.
 
 If architecture and implementation disagree, stop and surface the mismatch rather than silently choosing a new architecture.

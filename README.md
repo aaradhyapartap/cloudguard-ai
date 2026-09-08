@@ -7,15 +7,14 @@ vendor assessments — and get evidence-linked answers, detected control gaps,
 deterministically scored risk, and an auditable trail from every recommendation
 back to the chunks that produced it and the human who approved it.
 
-> **Status: Phase 2 of 12 — Authentication.**
-> The skeleton runs end to end and is authenticated. Document ingestion
-> (Phase 3) and retrieval (Phase 4) are not built yet. The
-> [architecture](docs/architecture/00-phase0-architecture.md) is complete and
-> the roadmap is in §N of that document.
+> **Status: Phase 8 of 12 — Security hardening.**
+> Phases 1-7 are complete through bounded human-approved action execution.
+> Phase 8 is implementing the repository's threat model, application/model
+> defenses, sensitive-data controls, abuse protection, and security regressions.
 
 ---
 
-## What Phases 1–2 deliver
+## Implemented foundation
 
 | | |
 |---|---|
@@ -29,10 +28,11 @@ back to the chunks that produced it and the human who approved it.
 | Identity | Just-in-time user provisioning; the token is authoritative for role |
 | Infrastructure | CDK identity stack: user pool, role groups, custom claims, hosted UI |
 | Frontend | Next.js 15 static export, TypeScript, Tailwind v4, enterprise console shell |
-| CI | Ruff, mypy `--strict`, pytest with real PostgreSQL, secret and dependency scanning |
+| CI | Ruff, mypy `--strict`, PostgreSQL-backed pytest, secret scanning, and advisory dependency audits |
 
-**149 tests passing** (including 13 token-forgery cases and 7 Row-Level Security
-tests against real PostgreSQL). **`ruff` clean. `mypy --strict` clean.**
+**856 backend tests passing** (including real PostgreSQL RLS, approval-lifecycle,
+runtime-privilege, and authorization route-matrix regressions).
+**`ruff` clean. `mypy --strict` clean.**
 
 ## Quick start
 
@@ -99,8 +99,13 @@ becomes `401` with a message that does not say which check failed.
 
 ## Architecture
 
-Full design: [`docs/architecture/00-phase0-architecture.md`](docs/architecture/00-phase0-architecture.md).
+Target design: [`docs/architecture/00-phase0-architecture.md`](docs/architecture/00-phase0-architecture.md).
 Decisions and their trade-offs: [`docs/adr/`](docs/adr/).
+
+The diagram below is the target architecture. Components not yet provisioned by
+the current CDK source—such as the API Gateway authorizer, WAF, customer-managed
+KMS keys, and a general DynamoDB audit projection—must not be described as current
+controls. The [threat model](docs/THREAT_MODEL.md) records the implemented boundary.
 
 ```
 Browser ─ CloudFront ─ S3 (static Next.js)
@@ -154,11 +159,13 @@ scripts/          local bootstrap and seeding
 | 0 | Architecture | ✅ |
 | 1 | Foundation | ✅ |
 | 2 | Cognito authentication, RBAC end to end | ✅ |
-| 3 | Document ingestion pipeline | next |
-| 4 | RAG: chunking, embeddings, retrieval, citations | |
-| 5 | Risk engine and dashboard | ← demoable from here |
-| 6–7 | Agents; human approval | |
-| 8–9 | Guardrails and security; AI evaluation | |
+| 3 | Document ingestion pipeline | ✅ |
+| 4 | RAG: chunking, embeddings, retrieval, citations | ✅ |
+| 5 | Deterministic compliance and risk engine | ✅ |
+| 6 | Bounded agent workflow | ✅ |
+| 7 | Human approval and bounded action execution | ✅ |
+| 8 | Security hardening | in progress |
+| 9 | AI evaluation | next |
 | 10–12 | Observability; IaC and CI/CD; portfolio polish | |
 
 ## Security
@@ -175,7 +182,10 @@ Known limitation, documented rather than buried: the static SPA stores its token
 in `sessionStorage`, so an XSS bug in this application is a session-theft bug.
 See [ADR-0015](docs/adr/0015-token-storage-and-id-tokens.md).
 
-`SECURITY.md` and `docs/THREAT_MODEL.md` arrive in Phase 8.
+See the [security policy](SECURITY.md),
+[threat model](docs/THREAT_MODEL.md), and
+[authorization matrix](docs/security/AUTHORIZATION_MATRIX.md). These documents
+separate current enforcement from target controls and record residual risk.
 
 ## Licence
 

@@ -29,7 +29,10 @@ def _service(container: ContainerDep) -> RAGService:
     response_model=RAGResponse,
     status_code=status.HTTP_200_OK,
     summary="Generate a grounded answer for a natural-language query",
-    dependencies=[requires(Permission.DOCUMENT_READ)],
+    dependencies=[
+        requires(Permission.DOCUMENT_READ),
+        requires(Permission.AI_QUERY),
+    ],
 )
 async def query_rag(
     payload: RAGRequest,

@@ -14,6 +14,7 @@ from __future__ import annotations
 from enum import StrEnum
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -190,6 +191,44 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 
+    @field_validator("cors_origins")
+    @classmethod
+    def _validate_origins(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("cors_origins must contain at least one exact origin")
+
+        normalized: list[str] = []
+        for origin in value:
+            if origin == "*":
+                raise ValueError("wildcard CORS origins are not permitted")
+
+            parsed = urlsplit(origin)
+            try:
+                port = parsed.port
+            except ValueError as exc:
+                raise ValueError("cors_origins contains an invalid port") from exc
+
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.hostname is None
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path
+                or parsed.query
+                or parsed.fragment
+                or origin != f"{parsed.scheme}://{parsed.netloc}"
+                or any(character.isspace() for character in origin)
+                or port == 0
+            ):
+                raise ValueError(
+                    "cors_origins entries must be exact http(s) origins without "
+                    "credentials, paths, queries, or fragments"
+                )
+            normalized.append(origin)
+
+        return list(dict.fromkeys(normalized))
+
     @field_validator("llm_provider")
     @classmethod
     def _no_mock_llm_in_prod(cls, value: str, info: ValidationInfo) -> str:
@@ -222,6 +261,11 @@ class Settings(BaseSettings):
                 "identity_provider='cognito' requires COGNITO_USER_POOL_ID "
                 "and COGNITO_CLIENT_ID"
             )
+
+        if self.environment is Environment.PROD and any(
+            urlsplit(origin).scheme != "https" for origin in self.cors_origins
+        ):
+            raise ValueError("prod CORS origins must use https")
         return self
 
     @property

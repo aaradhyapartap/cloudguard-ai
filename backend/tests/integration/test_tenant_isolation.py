@@ -28,6 +28,8 @@ from app.repositories.database import (
 )
 from sqlalchemy import text
 
+from conftest import database_admin_session  # type: ignore[import-not-found]
+
 pytestmark = pytest.mark.integration
 
 ORG_A = uuid4()
@@ -50,7 +52,7 @@ async def seed_two_tenants() -> object:
     _skip_without_database()
 
     # `organizations` has no RLS policy, so it seeds without a tenant context.
-    async with untenanted_session() as session:
+    async with database_admin_session() as session:
         for org_id, label in ((ORG_A, "acme"), (ORG_B, "globex")):
             # Slug carries the run-specific id. A fixed slug collides with the
             # seed data's unique constraint, ON CONFLICT DO NOTHING swallows the

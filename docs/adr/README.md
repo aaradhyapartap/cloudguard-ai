@@ -25,6 +25,7 @@ half most people cannot produce.
 | [0014](0014-local-auth-mirrors-production.md) | Local development uses real signed tokens | accepted | 2 |
 | [0015](0015-token-storage-and-id-tokens.md) | ID tokens as API credentials, sessionStorage in the SPA | accepted | 2 |
 | [0016](0016-no-security-definer-view.md) | Local login reads a code fixture, not the database | accepted | 2 |
+| [0017](0017-postgresql-approval-audit-canonical.md) | PostgreSQL is canonical for approval audit events | accepted | 8 |
 
 ADRs 0002–0012 are decided and summarised in
 [`../architecture/00-phase0-architecture.md`](../architecture/00-phase0-architecture.md) §P.

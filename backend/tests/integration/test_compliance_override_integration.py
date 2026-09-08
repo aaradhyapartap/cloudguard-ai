@@ -25,10 +25,7 @@ from app.models.enums import (
     Role,
 )
 from app.models.principal import Principal
-from app.repositories.database import (
-    tenant_session,
-    untenanted_session,
-)
+from app.repositories.database import tenant_session
 from app.repositories.tables import (
     AssessmentScoreSnapshot,
     ComplianceAssessment,
@@ -42,6 +39,8 @@ from app.repositories.tables import (
 from app.services.compliance import ComplianceAssessmentService
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
+
+from conftest import database_admin_session  # type: ignore[import-not-found]
 
 pytestmark = pytest.mark.integration
 
@@ -60,7 +59,7 @@ async def seed_integration_data() -> None:
         pytest.skip("Database tests skipped unless RUN_DB_TESTS=1 is set.")
 
     # Untenanted: Seed organizations, global framework, and controls
-    async with untenanted_session() as session:
+    async with database_admin_session() as session:
         session.add(
             Organization(
                 id=ORG_A,
@@ -77,7 +76,7 @@ async def seed_integration_data() -> None:
         )
         await session.commit()
 
-    async with untenanted_session() as session:
+    async with database_admin_session() as session:
         session.add(
             ComplianceFramework(
                 id=FRAMEWORK_ID,
@@ -89,7 +88,7 @@ async def seed_integration_data() -> None:
         )
         await session.commit()
 
-    async with untenanted_session() as session:
+    async with database_admin_session() as session:
         session.add(
             ComplianceControl(
                 id=CONTROL_1_ID,

@@ -31,10 +31,7 @@ from app.models.enums import (
     Role,
 )
 from app.models.principal import Principal
-from app.repositories.database import (
-    tenant_session,
-    untenanted_session,
-)
+from app.repositories.database import tenant_session
 from app.repositories.tables import (
     ComplianceControl,
     ComplianceFramework,
@@ -48,6 +45,8 @@ from app.services.compliance_candidate_extraction import (
     ComplianceCandidateExtractionService,
 )
 from app.services.retrieval import RetrievalService
+
+from conftest import database_admin_session  # type: ignore[import-not-found]
 
 pytestmark = pytest.mark.integration
 
@@ -97,7 +96,7 @@ async def seed_service_integration_data() -> object:
     _skip_without_database()
 
     # 1. Untenanted: Seed organizations, global framework, and controls
-    async with untenanted_session() as session:
+    async with database_admin_session() as session:
         for org_id, label in ((ORG_A, "svc-alpha"), (ORG_B, "svc-beta")):
             org = Organization(
                 id=org_id,
@@ -116,7 +115,7 @@ async def seed_service_integration_data() -> object:
         session.add(fw)
         await session.commit()
 
-    async with untenanted_session() as session:
+    async with database_admin_session() as session:
         c1 = ComplianceControl(
             id=CONTROL_1_ID,
             framework_id=FRAMEWORK_ID,
