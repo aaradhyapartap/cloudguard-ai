@@ -26,6 +26,53 @@ ORG_ID = UUID("11111111-1111-4111-8111-111111111111")
 DOCUMENT_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 
 
+@pytest.mark.parametrize("budget", ["bytes", "characters", "pages", "chunks"])
+async def test_ingestion_budget_failure_precedes_embedding_and_persistence(
+    monkeypatch: pytest.MonkeyPatch, budget: str,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from app.services import document_processing as module
+
+    document = make_document(content_type="application/pdf" if budget == "pages" else "text/plain")
+    service, store, events, repository = make_service(document)
+    embed = AsyncMock()
+    monkeypatch.setattr(service._embeddings, "embed", embed)
+    body = b"x" * 9
+    if budget == "bytes":
+        monkeypatch.setattr(module, "MAX_UPLOAD_BYTES", 8)
+    elif budget == "characters":
+        monkeypatch.setattr(module, "MAX_EXTRACTED_CHARACTERS", 8)
+    elif budget == "pages":
+        monkeypatch.setattr(module, "MAX_PDF_PAGES", 1)
+        body = _make_text_pdf("first", "second")
+    else:
+        monkeypatch.setattr(module, "MAX_DOCUMENT_CHUNKS", 1)
+        body = b"x" * 1001
+    await store.put_object(key=document.storage_key, body=body, content_type=document.content_type)
+
+    with pytest.raises(ConflictError):
+        await service.process_document(DOCUMENT_ID)
+
+    assert repository.status_history[-1] is ProcessingStatus.FAILED
+    assert repository.chunks == []
+    embed.assert_not_awaited()
+    assert events.events[-1].event_type == "DocumentProcessingFailed"
+
+
+async def test_exact_ingestion_budget_boundary_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import document_processing as module
+
+    monkeypatch.setattr(module, "MAX_UPLOAD_BYTES", 4)
+    monkeypatch.setattr(module, "MAX_EXTRACTED_CHARACTERS", 4)
+    document = make_document()
+    service, store, _events, repository = make_service(document)
+    await store.put_object(key=document.storage_key, body=b"abcd", content_type="text/plain")
+    await service.process_document(DOCUMENT_ID)
+    assert repository.status_history[-1] is ProcessingStatus.READY
+    assert repository.chunks[0].content == "abcd"
+
+
 # ---------------------------------------------------------------------------
 # PDF fixture helpers
 # ---------------------------------------------------------------------------

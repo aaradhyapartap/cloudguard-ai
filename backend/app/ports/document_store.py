@@ -11,6 +11,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from uuid import UUID
 
+from app.security.ingestion_limits import ObjectSizeLimitError
+
 
 class DocumentStore(ABC):
     @abstractmethod
@@ -28,6 +30,15 @@ class DocumentStore(ABC):
     @abstractmethod
     async def get_object(self, *, key: str) -> bytes:
         """Read an object. Raises NotFoundError if absent."""
+
+    async def get_object_bounded(self, *, key: str, max_bytes: int) -> bytes:
+        """Compatibility fallback; streaming adapters must override for bounded reads."""
+        if max_bytes < 0:
+            raise ValueError("Object read limit must be non-negative.")
+        body = await self.get_object(key=key)
+        if len(body) > max_bytes:
+            raise ObjectSizeLimitError("The document exceeds the upload size policy.")
+        return body
 
     @abstractmethod
     async def put_object(self, *, key: str, body: bytes, content_type: str) -> None:

@@ -25,6 +25,20 @@ USER_ID = UUID("33333333-3333-4333-8333-333333333333")
 DOCUMENT_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 
 
+@pytest.mark.parametrize("size", [None, True, -1, "10", 10 * 1024 * 1024 + 1])
+async def test_complete_upload_rejects_invalid_size_without_publishing(size: object) -> None:
+    class InvalidSizeStore(InMemoryDocumentStore):
+        async def head_object(self, *, key: str) -> dict[str, Any] | None:
+            return {"size_bytes": size, "content_type": "text/plain"}
+
+    document = make_document()
+    service, _store, events = make_service(document, store=InvalidSizeStore())
+    with pytest.raises(ConflictError):
+        await service.complete_upload(DOCUMENT_ID)
+    assert events.events == []
+    assert document.processing_status is ProcessingStatus.QUEUED
+
+
 class FakeDocumentRepository:
     def __init__(self, document: Document | None) -> None:
         self.document = document

@@ -151,6 +151,21 @@ redaction decisions must remain auditable.
 
 ## Phase 8.4 - Rate limiting and abuse protection
 
+Slice 1 local validation passed on 2026-10-31; commit pending.
+
+- Full backend suite: 1033 passed, 92% coverage, including PostgreSQL integration tests.
+- Backend Ruff: clean. Mypy: clean across 135 source files.
+- PostgreSQL revision: 0012. Published migrations unchanged.
+- Validation used local Python 3.14; Python 3.12 CI remains separately unverified.
+- No deployment, live AWS validation, backfill, reindex, or deletion was performed.
+
+Implemented: centralized per-document ingestion budgets
+bound registered/actual bytes, S3 worker reads, PDF pages, extracted characters,
+and chunks before persistence or embedding. See `docs/security/INGESTION_BUDGETS.md`.
+Rate limiting, concurrent work admission, model/retry budgets, parser resource
+isolation, and deployed edge/storage enforcement remain outstanding. No deployment
+or published migration change is performed by this slice.
+
 Deliver one centralized policy with deterministic tests for:
 
 - authentication and local login;

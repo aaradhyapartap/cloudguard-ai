@@ -20,6 +20,7 @@ from app.ports.document_store import DocumentStore
 from app.ports.event_publisher import EventPublisher
 from app.repositories.documents import DocumentRepository
 from app.repositories.tables import Document
+from app.security.ingestion_limits import ObjectSizeLimitError, require_upload_size
 
 UPLOAD_URL_TTL_SECONDS = 900
 
@@ -108,6 +109,11 @@ class DocumentService:
         metadata = await self._document_store.head_object(key=document.storage_key)
         if metadata is None:
             raise NotFoundError("The uploaded document object does not exist.")
+
+        try:
+            require_upload_size(metadata.get("size_bytes"))
+        except ObjectSizeLimitError as exc:
+            raise ConflictError("The uploaded document size is not permitted.") from exc
 
         # Document remains QUEUED — the worker owns the atomic QUEUED -> EXTRACTING claim.
         await self._events.publish(

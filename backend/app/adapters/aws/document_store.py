@@ -168,6 +168,42 @@ class S3DocumentStore(DocumentStore):
         body: bytes = await asyncio.to_thread(response["Body"].read)
         return body
 
+    async def get_object_bounded(self, *, key: str, max_bytes: int) -> bytes:
+        """Read at most the budget plus one sentinel byte, and always close."""
+        from app.security.ingestion_limits import ObjectSizeLimitError
+
+        if max_bytes < 0:
+            raise ValueError("Object read limit must be non-negative.")
+        try:
+            response = await self._call("get_object", Bucket=self._bucket, Key=key)
+        except Exception as exc:
+            if _error_code(exc) in _NOT_FOUND_CODES:
+                raise NotFoundError() from exc
+            raise UpstreamError("Could not read the stored document.") from exc
+
+        stream = response["Body"]
+        try:
+            length = response.get("ContentLength")
+            if isinstance(length, int) and length > max_bytes:
+                raise ObjectSizeLimitError("The document exceeds the upload size policy.")
+            pieces: list[bytes] = []
+            received = 0
+            while received <= max_bytes:
+                piece: bytes = await asyncio.to_thread(stream.read, max_bytes + 1 - received)
+                if not piece:
+                    break
+                pieces.append(piece)
+                received += len(piece)
+                if received > max_bytes:
+                    raise ObjectSizeLimitError("The document exceeds the upload size policy.")
+            return b"".join(pieces)
+        except ObjectSizeLimitError:
+            raise
+        except Exception as exc:
+            raise UpstreamError("Could not read the stored document.") from exc
+        finally:
+            await asyncio.to_thread(stream.close)
+
     async def put_object(self, *, key: str, body: bytes, content_type: str) -> None:
         try:
             await self._call(

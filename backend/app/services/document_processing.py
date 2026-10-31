@@ -16,6 +16,13 @@ from app.ports.document_store import DocumentStore
 from app.ports.event_publisher import EventPublisher
 from app.ports.llm_provider import EmbeddingProvider
 from app.ports.vector_store import VectorStore
+from app.security.ingestion_limits import (
+    MAX_DOCUMENT_CHUNKS,
+    MAX_EXTRACTED_CHARACTERS,
+    MAX_PDF_PAGES,
+    MAX_UPLOAD_BYTES,
+    ObjectSizeLimitError,
+)
 from app.security.sensitive_data import (
     POLICY_VERSION,
     DeterministicSensitiveDataDetector,
@@ -98,7 +105,26 @@ class DocumentProcessingService:
         # transitioned to FAILED so the document never stays stuck in EXTRACTING.
         _storage_failure_msg = "The document could not be retrieved from storage."
         try:
-            body = await self._document_store.get_object(key=document.storage_key)
+            body = await self._document_store.get_object_bounded(
+                key=document.storage_key, max_bytes=MAX_UPLOAD_BYTES
+            )
+        except ObjectSizeLimitError as exc:
+            error = "The document exceeds the upload size policy."
+            await self._repository.set_status(
+                organization_id=organization_id,
+                document_id=document.id,
+                status=ProcessingStatus.FAILED,
+                error=error,
+            )
+            await self._events.publish(
+                DomainEvent(
+                    event_type="DocumentProcessingFailed",
+                    organization_id=str(organization_id),
+                    payload={"document_id": str(document.id), "reason": error},
+                    occurred_at=datetime.now(UTC),
+                )
+            )
+            raise ConflictError(error) from exc
         except UpstreamError as exc:
             await self._repository.set_status(
                 organization_id=organization_id,
@@ -148,6 +174,9 @@ class DocumentProcessingService:
                     raise _DocumentExtractionError(
                         "The document contains no extractable text."
                     )
+
+            if len(text) > MAX_EXTRACTED_CHARACTERS:
+                raise _DocumentExtractionError("The extracted text exceeds the processing limit.")
 
             await self._repository.set_status(
                 organization_id=organization_id,
@@ -347,9 +376,16 @@ class DocumentProcessingService:
         if reader.is_encrypted:
             return "", "The PDF is encrypted and cannot be processed."
 
+        if len(reader.pages) > MAX_PDF_PAGES:
+            raise _PdfProcessingError("The PDF exceeds the page limit.")
+
         pages: list[str] = []
+        character_count = 0
         for page in reader.pages:
             page_text = page.extract_text() or ""
+            character_count += len(page_text) + (1 if pages else 0)
+            if character_count > MAX_EXTRACTED_CHARACTERS:
+                raise _PdfProcessingError("The extracted text exceeds the processing limit.")
             pages.append(page_text)
 
         text = "\n".join(pages)
@@ -368,9 +404,14 @@ class DocumentProcessingService:
         document: ProcessingDocument,
         text: str,
     ) -> list[ProcessingChunk]:
+        if len(text) > MAX_EXTRACTED_CHARACTERS:
+            raise _DocumentExtractionError("The extracted text exceeds the processing limit.")
         normalized = text.strip()
         if not normalized:
             return []
+
+        if (len(normalized) + TEXT_CHUNK_SIZE - 1) // TEXT_CHUNK_SIZE > MAX_DOCUMENT_CHUNKS:
+            raise _DocumentExtractionError("The document exceeds the chunk limit.")
 
         pieces = [
             normalized[index : index + TEXT_CHUNK_SIZE]

@@ -9,6 +9,7 @@ from pydantic import Field
 
 from app.models.common import DomainModel
 from app.models.enums import ConfidentialityLevel, DocumentType, ProcessingStatus
+from app.security.ingestion_limits import MAX_UPLOAD_BYTES
 
 
 class DocumentCreateRequest(DomainModel):
@@ -16,7 +17,7 @@ class DocumentCreateRequest(DomainModel):
 
     filename: str = Field(min_length=1, max_length=512)
     content_type: str = Field(min_length=1, max_length=160)
-    size_bytes: int = Field(ge=0)
+    size_bytes: int = Field(ge=0, le=MAX_UPLOAD_BYTES)
     document_type: DocumentType = DocumentType.UNKNOWN
     confidentiality_level: ConfidentialityLevel = ConfidentialityLevel.INTERNAL
     department: str | None = Field(default=None, max_length=120)

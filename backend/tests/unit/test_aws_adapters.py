@@ -26,6 +26,61 @@ ORG = UUID("11111111-1111-4111-8111-111111111111")
 DOC = UUID("33333333-3333-4333-8333-333333333333")
 
 
+@pytest.mark.parametrize("declared_size", [None, 3, 100])
+async def test_s3_bounded_read_rejects_large_objects_and_closes(declared_size: int | None) -> None:
+    from app.security.ingestion_limits import ObjectSizeLimitError
+
+    class RecordingBody(io.BytesIO):
+        def __init__(self, data: bytes) -> None:
+            super().__init__(data)
+            self.requested: list[int] = []
+
+        def read(self, size: int = -1) -> bytes:
+            self.requested.append(size)
+            return super().read(size)
+
+    body = RecordingBody(b"abcdefghij")
+
+    class BoundedS3(StubS3):
+        def get_object(self, **kwargs: Any) -> dict[str, Any]:
+            return {"Body": body, "ContentLength": declared_size}
+
+    s3 = S3DocumentStore(bucket="docs", region="us-east-1", client=BoundedS3())
+    with pytest.raises(ObjectSizeLimitError):
+        await s3.get_object_bounded(key="key", max_bytes=4)
+    assert body.closed
+    assert body.requested == ([] if declared_size == 100 else [5])
+
+
+async def test_s3_bounded_read_accepts_exact_limit() -> None:
+    s3, stub = store()
+    stub.objects["key"] = b"abcd"
+    assert await s3.get_object_bounded(key="key", max_bytes=4) == b"abcd"
+
+
+@pytest.mark.parametrize("data,rejected", [(b"abcd", False), (b"abcdefghij", True)])
+async def test_s3_bounded_read_handles_short_reads(data: bytes, rejected: bool) -> None:
+    from app.security.ingestion_limits import ObjectSizeLimitError
+
+    class ShortBody(io.BytesIO):
+        def read(self, size: int = -1) -> bytes:
+            return super().read(min(size, 1))
+
+    body = ShortBody(data)
+
+    class ShortS3(StubS3):
+        def get_object(self, **kwargs: Any) -> dict[str, Any]:
+            return {"Body": body}
+
+    s3 = S3DocumentStore(bucket="docs", region="us-east-1", client=ShortS3())
+    if rejected:
+        with pytest.raises(ObjectSizeLimitError):
+            await s3.get_object_bounded(key="key", max_bytes=4)
+    else:
+        assert await s3.get_object_bounded(key="key", max_bytes=4) == data
+    assert body.closed
+
+
 class ClientError(Exception):
     """Mirrors botocore's shape closely enough for the code under test."""
 
