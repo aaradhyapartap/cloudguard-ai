@@ -12,6 +12,7 @@ from app.models.rag import RAGRequest, RAGResponse, RAGSource
 from app.models.retrieval import RetrievalRequest
 from app.ports.llm_provider import LLMProvider
 from app.security.model_output import require_model_response_allowed
+from app.security.projections import safe_source_metadata
 from app.security.prompt_isolation import (
     UntrustedPromptSection,
     build_isolated_user_prompt,
@@ -130,7 +131,7 @@ class RAGService:
                         chunk_id=match.chunk_id,
                         document_id=match.document_id,
                         score=match.score,
-                        metadata=match.metadata,
+                        metadata=safe_source_metadata(match.metadata),
                     )
                 )
                 context_blocks.append(block)
@@ -146,7 +147,7 @@ class RAGService:
                         chunk_id=match.chunk_id,
                         document_id=match.document_id,
                         score=match.score,
-                        metadata=match.metadata,
+                        metadata=safe_source_metadata(match.metadata),
                     )
                 )
                 context_blocks.append(block)

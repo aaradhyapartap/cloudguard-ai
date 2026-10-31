@@ -82,9 +82,8 @@ async def get_principal(
         # then writes inside that tenant's context.
         principal = await IdentityService().resolve(claims)
     except TokenVerificationError as exc:
-        # The specific reason is logged for operators and withheld from the
-        # caller. Telling a forger which check failed tells them what to fix.
-        logger.warning("token_rejected", reason=exc.reason)
+        # Provider rejection strings may include attacker-selected token claims.
+        logger.warning("token_rejected", reason="verification_failed")
         raise AuthenticationError("Authentication failed.") from exc
 
     request.state.organization_id = str(principal.organization_id)
@@ -93,7 +92,6 @@ async def get_principal(
         request_id=getattr(request.state, "request_id", "unknown"),
         organization_id=str(principal.organization_id),
         user_id=str(principal.user_id),
-        route=request.url.path,
     )
     return principal
 

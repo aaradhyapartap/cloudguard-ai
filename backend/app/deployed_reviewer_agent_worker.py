@@ -14,6 +14,7 @@ from app.models.agent_workflow import AgentWorkflowResearchResult
 from app.models.principal import Principal
 from app.models.reviewer_agent import ReviewerAgentRequest
 from app.models.risk_agent import RiskAgentResult
+from app.security.worker_errors import sanitize_worker_failures
 from app.services.reviewer_agent import ReviewerAgent
 
 
@@ -63,6 +64,7 @@ async def _handle(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@sanitize_worker_failures
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda entrypoint for the Reviewer state."""
     del context

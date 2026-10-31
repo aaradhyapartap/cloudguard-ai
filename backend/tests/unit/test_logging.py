@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import io
+import logging
 from collections import UserDict
 
 import pytest
 import structlog
-from app.core.logging import REDACTED, redact_sensitive
+from app.core.logging import REDACTED, PrivacyLogFilter, _mark_sanitized, redact_sensitive
 
 
 def test_top_level_sensitive_keys_are_redacted() -> None:
@@ -96,3 +97,45 @@ def test_renderers_cannot_restore_exception_or_stack_content(log_format: str) ->
     assert "Traceback" not in rendered
     assert "safe_failure" in rendered
     assert "ValueError" in rendered
+
+
+def test_foreign_logging_drops_values_before_formatting_opaque_messages() -> None:
+    class Dangerous:
+        def __str__(self) -> str:
+            raise AssertionError("A foreign message must not be formatted")
+
+    record = logging.LogRecord("external", logging.ERROR, "", 1, Dangerous(), (), None)
+    record.exc_text = "SYNTHETIC-SENSITIVE-TRACEBACK"
+    record.stack_info = "SYNTHETIC-SENSITIVE-STACK"
+    assert PrivacyLogFilter().filter(record)
+    rendered = logging.Formatter("%(message)s").format(record)
+    assert "external_log" in rendered
+    assert "SYNTHETIC-SENSITIVE" not in rendered
+
+
+def test_sanitized_application_events_survive_standard_logging_filter() -> None:
+    output = io.StringIO()
+    handler = logging.StreamHandler(output)
+    handler.addFilter(PrivacyLogFilter())
+    logger = logging.Logger("privacy-test", level=logging.INFO)
+    logger.addHandler(handler)
+    structured = structlog.wrap_logger(
+        logger,
+        processors=[redact_sensitive, structlog.processors.JSONRenderer(), _mark_sanitized],
+    )
+    structured.info("safe_application_event", count=3, task_token="synthetic-capability")
+    rendered = output.getvalue()
+    assert "safe_application_event" in rendered
+    assert '"count": 3' in rendered
+    assert "synthetic-capability" not in rendered
+
+
+def test_raw_route_is_never_added_to_request_context() -> None:
+    from app.core.logging import bind_request_context
+    from structlog.contextvars import clear_contextvars, get_contextvars
+
+    try:
+        bind_request_context(request_id="req-safe", route="/SYNTHETIC-SENSITIVE")
+        assert "route" not in get_contextvars()
+    finally:
+        clear_contextvars()

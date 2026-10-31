@@ -13,6 +13,7 @@ from app.core.logging import configure_logging
 from app.models.agent_workflow import AgentWorkflowResearchResult
 from app.models.principal import Principal
 from app.models.research_agent import ResearchAgentRequest
+from app.security.worker_errors import sanitize_worker_failures
 from app.services.research_agent import ResearchAgent
 from app.services.retrieval import RetrievalService
 from app.services.tool_registry import ToolRegistry
@@ -65,6 +66,7 @@ async def _handle(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@sanitize_worker_failures
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda entrypoint for the Research state."""
     del context

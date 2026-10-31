@@ -31,6 +31,7 @@ from app.core.config import get_worker_settings
 from app.core.container import build_worker_container
 from app.core.logging import configure_logging, get_logger
 from app.models.tenant import TenantScope
+from app.security.worker_errors import sanitize_worker_failures
 from app.services.document_processing import DocumentProcessingService
 
 logger = get_logger(__name__)
@@ -120,6 +121,7 @@ async def _handle(event: dict[str, Any]) -> None:
     )
 
 
+@sanitize_worker_failures
 def handler(event: dict[str, Any], context: Any) -> None:
     del context
     asyncio.run(_handle(event))

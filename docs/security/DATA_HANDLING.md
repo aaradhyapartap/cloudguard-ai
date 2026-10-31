@@ -64,11 +64,11 @@ False positives are possible. Review these limits and evaluate additional detect
 before making production privacy claims. Guardrails remain defense in depth.
 
 Authorized raw retrieval and evidence-quote responses are not generative-model
-outputs and are not rewritten by this patch. Public metadata/evidence projection,
-intentional application-error responses, platform/third-party logs, and workflow
-execution history still require the remaining Phase 8.3 review. A user with clearance
-may still read original evidence; this model policy must never be mistaken for
-field-level access control.
+outputs and remain original evidence. Slice 3 adds metadata allowlists, generic
+error-detail suppression, configured foreign-log sanitization, and worker failure
+boundaries. See PROJECTIONS_AND_RUNTIME_PRIVACY.md for the review and external
+runtime/IAM limits. A user with clearance may still read original evidence; this
+model policy must never be mistaken for field-level access control.
 
 ## Validation
 

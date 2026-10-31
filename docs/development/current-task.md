@@ -93,6 +93,23 @@ Implementation and local validation completed on 2026-10-31; commit pending.
 
 ## Phase 8.3 - PII and sensitive-data controls
 
+Slice 3 local validation passed on 2026-10-31; commit pending.
+
+- Full backend suite: 1006 passed, 92% coverage, including PostgreSQL integration tests.
+- Infrastructure suite: 38 passed.
+- Backend Ruff: clean. Backend mypy: clean across 134 source files.
+- Infrastructure mypy: clean across 4 source files.
+- PostgreSQL revision: 0012. Published migrations unchanged.
+- Validation used local Python 3.14; Python 3.12 CI remains separately unverified.
+- No deployment, live-provider evaluation, backfill, or reindex was performed.
+
+Implemented: allowlisted retrieval/RAG metadata, sanitized intentional error
+projections, standard-library logging privacy controls, worker failure
+serialization, and explicit CloudWatch workflow-payload exclusion.
+See `docs/security/PROJECTIONS_AND_RUNTIME_PRIVACY.md`. Original authorized
+evidence and native workflow history remain intentionally retained sensitive
+surfaces. Deployment IAM/runtime verification remains required.
+
 Slice 2 local validation passed on 2026-10-31; commit pending.
 Validation: 986 backend tests passed, 92% coverage, Ruff clean, and mypy clean
 across 132 source files. PostgreSQL integration tests passed; migrations unchanged.

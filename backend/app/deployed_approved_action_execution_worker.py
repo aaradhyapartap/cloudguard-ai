@@ -16,6 +16,7 @@ from app.models.approved_action_execution import (
     ActionExecutionDisposition,
 )
 from app.models.principal import Principal
+from app.security.worker_errors import sanitize_worker_failures
 
 
 class ApprovedActionExecutionWorkflowTaskInput(BaseModel):
@@ -78,6 +79,7 @@ async def _handle(
     )
 
 
+@sanitize_worker_failures
 def handler(
     event: dict[str, Any],
     context: Any,

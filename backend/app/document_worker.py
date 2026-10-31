@@ -12,6 +12,7 @@ from app.core.container import build_container
 from app.core.logging import configure_logging, get_logger
 from app.models.tenant import TenantScope
 from app.repositories.database import tenant_session
+from app.security.worker_errors import sanitize_worker_failures
 from app.services.document_processing import DocumentProcessingService
 
 logger = get_logger(__name__)
@@ -26,7 +27,7 @@ async def _handle(event: dict[str, Any]) -> None:
     if detail_type != "DocumentUploadCompleted":
         logger.info(
             "document_worker_event_ignored",
-            detail_type=detail_type,
+            ignored_reason="unsupported_event_type",
         )
         return
 
@@ -61,6 +62,7 @@ async def _handle(event: dict[str, Any]) -> None:
     )
 
 
+@sanitize_worker_failures
 def handler(event: dict[str, Any], context: Any) -> None:
     del context
     asyncio.run(_handle(event))

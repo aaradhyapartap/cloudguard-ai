@@ -21,6 +21,7 @@ request traceable across the whole application.
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from collections.abc import Mapping
@@ -63,6 +64,33 @@ SENSITIVE_KEY_FRAGMENTS: tuple[str, ...] = (
 
 _SENSITIVE_EXACT_KEYS = frozenset({"error", "detail", "exception", "stack", "body"})
 _MAX_REDACTION_DEPTH = 12
+
+
+def _mark_sanitized(
+    _logger: WrappedLogger, _name: str, rendered: object
+) -> tuple[tuple[str], dict[str, Any]]:
+    """Mark only output that has traversed the application processor chain."""
+    if not isinstance(rendered, str):
+        raise TypeError("Expected rendered log text.")
+    return ((rendered,), {"extra": {"_cloudguard_sanitized": True}})
+
+
+class PrivacyLogFilter(logging.Filter):
+    """Discard foreign free text before any formatter invokes getMessage()."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not getattr(record, "_cloudguard_sanitized", False):
+            record.msg = json.dumps({
+                "event": "external_log",
+                "level": logging.getLevelName(record.levelno),
+            })
+            record.args = ()
+        # Never let the standard formatter append traceback/stack text, even if
+        # a caller adds exception state after application rendering.
+        record.exc_info = None
+        record.exc_text = None
+        record.stack_info = None
+        return True
 
 
 def redact_sensitive(
@@ -126,19 +154,24 @@ def configure_logging(settings: Settings | WorkerSettings | AgentWorkerSettings)
     # logger has. It also means uvicorn, sqlalchemy and application logs all
     # travel through one handler and come out in one format.
     structlog.configure(
-        processors=[*shared, renderer],
+        processors=[*shared, renderer, _mark_sanitized],
         wrapper_class=structlog.make_filtering_bound_logger(level),
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
 
+    handler = logging.StreamHandler(sys.stdout)
+    handler.addFilter(PrivacyLogFilter())
     logging.basicConfig(
         format="%(message)s",
-        stream=sys.stdout,
+        handlers=[handler],
         level=level,
         force=True,
     )
-    for noisy in ("uvicorn.access", "sqlalchemy.engine"):
+    for noisy in (
+        "uvicorn", "uvicorn.error", "uvicorn.access", "sqlalchemy", "sqlalchemy.engine",
+        "botocore", "boto3", "httpx", "httpcore", "mangum", "mangum.http", "mangum.lifespan",
+    ):
         logging.getLogger(noisy).handlers.clear()
         logging.getLogger(noisy).propagate = True
 
@@ -157,8 +190,8 @@ def bind_request_context(
         context["organization_id"] = organization_id
     if user_id:
         context["user_id"] = user_id
-    if route:
-        context["route"] = route
+    # Kept as an ignored compatibility argument; raw paths may contain secrets.
+    del route
     bind_contextvars(**context)
 
 

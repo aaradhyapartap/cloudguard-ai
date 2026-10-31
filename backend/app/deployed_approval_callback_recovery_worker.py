@@ -13,6 +13,7 @@ from app.adapters.aws.approval_callback_recovery_repository import (
     AuroraDataAPIApprovalCallbackRecoveryRepository,
 )
 from app.core.config import get_settings
+from app.security.worker_errors import sanitize_worker_failures
 from app.services.approval_callback import ApprovalCallbackService
 
 LEASE_SECONDS = 300
@@ -117,6 +118,7 @@ async def _run() -> dict[str, int]:
     }
 
 
+@sanitize_worker_failures
 def handler(
     event: dict[str, Any],
     context: Any,

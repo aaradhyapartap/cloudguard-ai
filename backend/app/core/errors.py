@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.core.logging import get_logger
+from app.security.sensitive_data import DeterministicSensitiveDataDetector
 
 logger = get_logger(__name__)
 
@@ -143,7 +144,12 @@ def register_exception_handlers(app: FastAPI) -> None:
             error_code=exc.code.value,
             status_code=exc.status_code,
         )
-        return _render(exc.status_code, exc.code, exc.message, request, exc.details)
+        # Structured details are internal-only unless projected by a specific
+        # handler. Do not reflect arbitrary context dictionaries to clients.
+        message = exc.message
+        if DeterministicSensitiveDataDetector().detect(message):
+            message = type(exc).message
+        return _render(exc.status_code, exc.code, message, request)
 
     @app.exception_handler(RequestValidationError)
     async def _handle_validation(

@@ -227,6 +227,9 @@ class IngestionStack(cdk.Stack):
         cfn_sm = self.state_machine.node.default_child
         assert isinstance(cfn_sm, sfn.CfnStateMachine)
         cfn_sm.add_property_override(
+            "LoggingConfiguration", {"Level": "OFF", "IncludeExecutionData": False}
+        )
+        cfn_sm.add_property_override(
             "EncryptionConfiguration",
             {"Type": "AWS_OWNED_KEY"},
         )

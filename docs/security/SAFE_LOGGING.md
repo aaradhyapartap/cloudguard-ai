@@ -37,6 +37,11 @@ by this slice and require a separate sensitive-data review.
 
 ## Remaining Phase 8.3 work
 
+Slice 3 reviews and implements additional runtime/projection boundaries; see
+`PROJECTIONS_AND_RUNTIME_PRIVACY.md` for current controls and deployment residuals.
+The list below records the original slice-1 follow-up scope, not a claim that later
+model-data and projection controls are absent.
+
 - Provider-neutral PII and credential detection/redaction.
 - Minimized model input and checked model output across all generation paths.
 - Auditable redaction metadata while preserving original compliance evidence.

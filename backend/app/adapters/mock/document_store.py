@@ -33,7 +33,7 @@ class InMemoryDocumentStore(DocumentStore):
 
     async def get_object(self, *, key: str) -> bytes:
         if key not in self._objects:
-            raise NotFoundError(f"No object at key {key!r}")
+            raise NotFoundError("The stored document does not exist.")
         return self._objects[key][0]
 
     async def put_object(self, *, key: str, body: bytes, content_type: str) -> None:

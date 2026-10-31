@@ -149,8 +149,11 @@ The following are open and must not be described as implemented:
   embedding inputs and rejects detected sensitive model output. This is not complete
   PII recognition; names, unusual formats, obfuscation, and unlabelled secrets can
   escape detection. See [model data handling](docs/security/DATA_HANDLING.md).
-  Public metadata/evidence projections, platform logs, and workflow-history review
-  remain Phase 8.3 work.
+  Source metadata now uses an allowlist, configured foreign logs are minimized,
+  and task failures are sanitized. Authorized original evidence and native workflow
+  history remain protected surfaces. See
+  [runtime/privacy review](docs/security/PROJECTIONS_AND_RUNTIME_PRIVACY.md) for
+  external logging/IAM responsibilities and remaining deployment verification.
 - Endpoint rate limiting, upload quotas, extraction limits, and WAF/API Gateway abuse
   controls remain Phase 8.4 work.
 - The static SPA stores its ID token in `sessionStorage`; XSS can therefore steal a

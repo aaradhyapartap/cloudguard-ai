@@ -520,6 +520,11 @@ class AgentWorkflowStack(cdk.Stack):
 
         cfn_sm = self.state_machine.node.default_child
         assert isinstance(cfn_sm, sfn.CfnStateMachine)
+        # Execution payloads can contain evidence and internal task capabilities.
+        # This disables CloudWatch payload copies, not Standard execution history.
+        cfn_sm.add_property_override(
+            "LoggingConfiguration", {"Level": "OFF", "IncludeExecutionData": False}
+        )
         cfn_sm.add_property_override(
             "EncryptionConfiguration",
             {"Type": "AWS_OWNED_KEY"},

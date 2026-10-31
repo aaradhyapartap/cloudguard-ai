@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from app.core.errors import register_exception_handlers
+from app.core.errors import ConflictError, register_exception_handlers
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
@@ -79,3 +79,23 @@ def test_unexpected_exception_response_is_sanitized() -> None:
     assert response.status_code == 500
     assert "SYNTHETIC-CREDENTIAL" not in response.text
     assert response.json()["error"]["code"] == "INTERNAL_ERROR"
+
+
+def test_application_error_drops_internal_details_and_detected_sensitive_message() -> None:
+    app = FastAPI()
+    register_exception_handlers(app)
+
+    @app.get("/conflict")
+    async def conflict() -> None:
+        raise ConflictError(
+            "Rejected api_key=synthetic-credential-value",
+            details={"task_token": "SYNTHETIC-INTERNAL-CAPABILITY"},
+        )
+
+    with TestClient(app) as client:
+        response = client.get("/conflict")
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "CONFLICT"
+    assert response.json()["error"]["details"] is None
+    assert "synthetic-credential" not in response.text
+    assert "SYNTHETIC-INTERNAL" not in response.text

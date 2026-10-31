@@ -1,5 +1,6 @@
 """Unit tests for RetrievalService and query search orchestration."""
 
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
@@ -76,6 +77,27 @@ async def test_retrieval_query_is_minimized_before_embedding() -> None:
     await service.search(principal=_make_principal(), request=request)
     assert embeddings.inputs == ["Find [REDACTED] access policy"]
     assert request.query == "Find alice@example.test access policy"
+
+
+async def test_retrieval_projects_metadata_but_preserves_authorized_original_text() -> None:
+    match = VectorMatch(
+        chunk_id="chunk-1", document_id=str(DOC_ID_1), score=0.9,
+        content="Authorized original evidence for alice@example.test",
+        metadata={"page": 1, "storage_key": "internal-key", "task_token": "internal-token"},
+    )
+    store = AsyncMock(spec=VectorStore)
+    store.search.return_value = [match]
+    principal = _make_principal()
+    service = RetrievalService(embedding_provider=MockEmbeddingProvider(), vector_store=store)
+    response = await service.search(principal=principal, request=RetrievalRequest(query="policy"))
+    assert response.matches[0].metadata == {"page": 1}
+    assert response.matches[0].content == match.content
+    assert response.matches[0].chunk_id == match.chunk_id
+    assert match.metadata["storage_key"] == "internal-key"
+    assert store.search.call_args.kwargs["organization_id"] == principal.organization_id
+    assert store.search.call_args.kwargs["confidentiality_levels"] == (
+        principal.visible_confidentiality_levels
+    )
 
 
 class _FailingVectorStore(VectorStore):

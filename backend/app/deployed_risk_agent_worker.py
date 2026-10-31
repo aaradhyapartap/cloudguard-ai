@@ -13,6 +13,7 @@ from app.core.logging import configure_logging
 from app.models.agent_workflow import AgentWorkflowResearchResult
 from app.models.principal import Principal
 from app.models.risk_agent import RiskAgentRequest
+from app.security.worker_errors import sanitize_worker_failures
 from app.services.risk_agent import RiskAgent
 
 
@@ -59,6 +60,7 @@ async def _handle(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@sanitize_worker_failures
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda entrypoint for the Risk state."""
     del context

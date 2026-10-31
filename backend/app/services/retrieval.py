@@ -9,6 +9,7 @@ from app.models.principal import Principal
 from app.models.retrieval import RetrievalRequest, RetrievalResponse
 from app.ports.llm_provider import EmbeddingProvider
 from app.ports.vector_store import VectorStore, validate_top_k
+from app.security.projections import safe_source_metadata
 from app.security.sensitive_data import minimize_model_text
 
 logger = get_logger(__name__)
@@ -47,7 +48,7 @@ class RetrievalService:
         try:
             validate_top_k(request.top_k)
         except ValueError as exc:
-            raise ValidationError(str(exc)) from exc
+            raise ValidationError("The requested result count is invalid.") from exc
 
         # 1. Generate query embedding
         try:
@@ -103,6 +104,9 @@ class RetrievalService:
         )
 
         return RetrievalResponse(
-            matches=matches,
+            matches=[
+                match.model_copy(update={"metadata": safe_source_metadata(match.metadata)})
+                for match in matches
+            ],
             total=len(matches),
         )
