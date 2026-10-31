@@ -145,7 +145,11 @@ The following are open and must not be described as implemented:
   implemented. These controls protect application authority but cannot guarantee
   that adversarial text never influences generated prose. The current CDK source
   does not provision the Guardrail resource; deployment must supply its ID/version.
-- PII detection, model-context minimization, and comprehensive safe-logging tests
+- Bounded sensitive-data pattern detection minimizes model-facing generation and
+  embedding inputs and rejects detected sensitive model output. This is not complete
+  PII recognition; names, unusual formats, obfuscation, and unlabelled secrets can
+  escape detection. See [model data handling](docs/security/DATA_HANDLING.md).
+  Public metadata/evidence projections, platform logs, and workflow-history review
   remain Phase 8.3 work.
 - Endpoint rate limiting, upload quotas, extraction limits, and WAF/API Gateway abuse
   controls remain Phase 8.4 work.

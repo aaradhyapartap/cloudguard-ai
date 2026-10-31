@@ -93,6 +93,19 @@ Implementation and local validation completed on 2026-10-31; commit pending.
 
 ## Phase 8.3 - PII and sensitive-data controls
 
+Slice 2 local validation passed on 2026-10-31; commit pending.
+Validation: 986 backend tests passed, 92% coverage, Ruff clean, and mypy clean
+across 132 source files. PostgreSQL integration tests passed; migrations unchanged.
+Validation used local Python 3.14; Python 3.12 CI remains separately unverified.
+No live-provider privacy evaluation or reindex was performed.
+
+Implemented: provider-neutral bounded sensitive-data
+detection, minimized generation/embedding inputs, rejected sensitive model output,
+and persisted category/policy annotations on newly ingested original chunks. See
+`docs/security/DATA_HANDLING.md` for coverage and limitations. Remaining Phase 8.3
+work includes metadata/evidence projection, intentional error responses, platform
+logging, and workflow-history review. No backfill or reindex is performed.
+
 Slice 1 local validation passed on 2026-10-31; commit pending.
 Validation: 939 backend tests passed, 92% coverage, Ruff clean, and mypy clean
 across 131 source files. PostgreSQL integration tests passed; migrations unchanged.

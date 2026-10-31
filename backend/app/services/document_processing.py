@@ -16,6 +16,11 @@ from app.ports.document_store import DocumentStore
 from app.ports.event_publisher import EventPublisher
 from app.ports.llm_provider import EmbeddingProvider
 from app.ports.vector_store import VectorStore
+from app.security.sensitive_data import (
+    POLICY_VERSION,
+    DeterministicSensitiveDataDetector,
+    minimize_model_text,
+)
 
 TEXT_CHUNK_SIZE = 1000
 
@@ -217,7 +222,18 @@ class DocumentProcessingService:
         # 4. Generate embeddings for document chunks
         _embedding_failure_msg = "The document could not be embedded."
         try:
-            texts_to_embed = [chunk.content for chunk in chunks]
+            # Detect on the complete normalized document before slicing, so a
+            # sensitive value spanning a stored chunk boundary is fully masked.
+            minimized = minimize_model_text(
+                text.strip(), surface="DOCUMENT_EMBEDDING", preserve_length=True
+            )
+            texts_to_embed = [
+                minimized[
+                    chunk.chunk_index * TEXT_CHUNK_SIZE:
+                    chunk.chunk_index * TEXT_CHUNK_SIZE + len(chunk.content)
+                ]
+                for chunk in chunks
+            ]
             embedding_result = await self._embeddings.embed(texts_to_embed)
             if len(embedding_result.vectors) != len(chunks):
                 raise ValueError("Embedding count does not match chunk count.")
@@ -361,6 +377,8 @@ class DocumentProcessingService:
             for index in range(0, len(normalized), TEXT_CHUNK_SIZE)
         ]
 
+        findings = DeterministicSensitiveDataDetector().detect(normalized)
+
         return [
             ProcessingChunk(
                 chunk_index=index,
@@ -369,6 +387,12 @@ class DocumentProcessingService:
                 metadata={
                     "content_type": document.content_type,
                     "filename": document.filename,
+                    "model_data_policy_version": POLICY_VERSION,
+                    "sensitive_data_categories": sorted({
+                        finding.category for finding in findings
+                        if finding.start < (index + 1) * TEXT_CHUNK_SIZE
+                        and finding.end > index * TEXT_CHUNK_SIZE
+                    }),
                 },
             )
             for index, content in enumerate(pieces)

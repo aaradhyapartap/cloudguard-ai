@@ -9,6 +9,7 @@ from app.models.principal import Principal
 from app.models.retrieval import RetrievalRequest, RetrievalResponse
 from app.ports.llm_provider import EmbeddingProvider
 from app.ports.vector_store import VectorStore, validate_top_k
+from app.security.sensitive_data import minimize_model_text
 
 logger = get_logger(__name__)
 
@@ -50,7 +51,9 @@ class RetrievalService:
 
         # 1. Generate query embedding
         try:
-            embedding_result = await self._embedding_provider.embed([query])
+            embedding_result = await self._embedding_provider.embed(
+                [minimize_model_text(query, surface="RETRIEVAL_QUERY")]
+            )
         except UpstreamError:
             raise
         except Exception as exc:

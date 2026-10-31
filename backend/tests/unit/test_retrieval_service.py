@@ -58,6 +58,26 @@ class _FailingEmbeddingProvider(EmbeddingProvider):
         raise UpstreamError("Bedrock throttling exception.")
 
 
+async def test_retrieval_query_is_minimized_before_embedding() -> None:
+    class RecordingEmbeddings(MockEmbeddingProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inputs: list[str] = []
+
+        async def embed(self, texts: list[str]) -> EmbeddingResult:
+            self.inputs = list(texts)
+            return await super().embed(texts)
+
+    embeddings = RecordingEmbeddings()
+    request = RetrievalRequest(query="Find alice@example.test access policy")
+    service = RetrievalService(
+        embedding_provider=embeddings, vector_store=InMemoryVectorStore()
+    )
+    await service.search(principal=_make_principal(), request=request)
+    assert embeddings.inputs == ["Find [REDACTED] access policy"]
+    assert request.query == "Find alice@example.test access policy"
+
+
 class _FailingVectorStore(VectorStore):
     async def upsert(self, records: list[VectorRecord]) -> int:
         return len(records)

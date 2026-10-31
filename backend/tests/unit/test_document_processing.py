@@ -220,6 +220,37 @@ def make_service(
     return service, store, events, repository
 
 
+async def test_embedding_minimization_preserves_stored_evidence_across_chunk_boundary() -> None:
+    class RecordingEmbeddings(MockEmbeddingProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inputs: list[str] = []
+
+        async def embed(self, texts: list[str]) -> EmbeddingResult:
+            self.inputs = list(texts)
+            return await super().embed(texts)
+
+    embeddings = RecordingEmbeddings()
+    document = make_document()
+    service, store, _events, repository = make_service(document, embedding_provider=embeddings)
+    # The value crosses the original 1000-character stored chunk boundary.
+    original = "A " * 497 + "123-45-6789" + " MFA is required."
+    await store.put_object(
+        key=document.storage_key, body=original.encode(), content_type="text/plain"
+    )
+    await service.process_document(document.id)
+
+    assert "".join(chunk.content for chunk in repository.chunks) == original
+    assert len(embeddings.inputs) == len(repository.chunks)
+    assert "123-45-6789" not in "".join(embeddings.inputs)
+    assert "*" * 11 in "".join(embeddings.inputs)
+    assert len("".join(embeddings.inputs)) == len(original)
+    assert all("SSN" in chunk.metadata["sensitive_data_categories"]
+               for chunk in repository.chunks)
+    assert all(chunk.metadata["model_data_policy_version"] == "model-data-v1"
+               for chunk in repository.chunks)
+
+
 # ---------------------------------------------------------------------------
 # Atomic claim & status lifecycle
 # ---------------------------------------------------------------------------

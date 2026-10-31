@@ -15,6 +15,8 @@ import secrets
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from app.security.sensitive_data import minimize_model_text
+
 _SECTION_NAME_PATTERN = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 _TRUSTED_KEY_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _NONCE_ATTEMPTS = 8
@@ -114,7 +116,7 @@ def build_isolated_user_prompt(
             [
                 "",
                 f"BEGIN_UNTRUSTED_USER_REQUEST_{nonce}",
-                user_request,
+                minimize_model_text(user_request, surface="USER_REQUEST"),
                 f"END_UNTRUSTED_USER_REQUEST_{nonce}",
             ]
         )
@@ -124,7 +126,7 @@ def build_isolated_user_prompt(
             [
                 "",
                 f"BEGIN_UNTRUSTED_CONTEXT_{section.name}_{nonce}",
-                section.content,
+                minimize_model_text(section.content, surface=section.name),
                 f"END_UNTRUSTED_CONTEXT_{section.name}_{nonce}",
             ]
         )

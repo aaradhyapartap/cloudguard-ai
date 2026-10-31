@@ -115,3 +115,22 @@ def test_non_string_trusted_identifier_is_rejected() -> None:
             untrusted_sections=[],
             output_contract="Return an answer.",
         )
+
+
+def test_model_input_is_minimized_without_mutating_original_evidence() -> None:
+    original = UntrustedPromptSection(
+        name="REFERENCE_EVIDENCE", content="[S1] contact alice@example.test; SSN 123-45-6789"
+    )
+    prompt = build_isolated_user_prompt(
+        task="Answer from evidence.",
+        user_request="Contact alice@example.test",
+        trusted_identifiers={"allowed_source_labels": ["S1"]},
+        untrusted_sections=[original],
+        output_contract="Return a cited answer.",
+    )
+    assert "alice@example.test" not in prompt
+    assert "123-45-6789" not in prompt
+    assert "[REDACTED]" in prompt
+    assert '"allowed_source_labels":["S1"]' in prompt
+    assert "[S1]" in prompt
+    assert "alice@example.test" in original.content

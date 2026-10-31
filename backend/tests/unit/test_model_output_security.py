@@ -42,3 +42,21 @@ def test_model_safety_intervention_fails_closed(response: GenerationResponse) ->
 @pytest.mark.parametrize("action", [None, "", "NONE", "no_action"])
 def test_no_intervention_is_accepted(action: str | None) -> None:
     require_model_response_allowed(_response(guardrail_action=action))
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "Contact alice@example.test",
+        "The SSN is 123-45-6789",
+        "task_token=synthetic-capability-value",
+        "https://example.test/file?X-Amz-Signature=synthetic-signature",
+        r'{"rationale":"alice\u0040example.test"}',
+        r'{"api\u005fkey":"synthetic-credential-value"}',
+    ],
+)
+def test_sensitive_model_output_fails_closed_without_reflecting_it(content: str) -> None:
+    response = _response().model_copy(update={"content": content})
+    with pytest.raises(UpstreamError, match="blocked by sensitive-data controls") as caught:
+        require_model_response_allowed(response)
+    assert content not in str(caught.value)
