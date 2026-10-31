@@ -58,4 +58,4 @@ class GetPolicyArguments(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     assessment_id: UUID
-    control_ids: list[UUID] | None = Field(default=None, max_length=25)
+    control_ids: list[UUID] | None = Field(default=None, min_length=1, max_length=25)

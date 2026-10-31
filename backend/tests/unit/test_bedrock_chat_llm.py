@@ -94,6 +94,55 @@ async def test_bedrock_chat_llm_with_guardrail_config() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "guardrail_id,guardrail_version",
+    [
+        ("gr-12345", None),
+        (None, "1"),
+        ("   ", "1"),
+        ("gr-12345", "   "),
+    ],
+)
+def test_bedrock_chat_llm_rejects_partial_guardrail_configuration(
+    guardrail_id: str | None,
+    guardrail_version: str | None,
+) -> None:
+    with pytest.raises(ValueError, match="must be configured together"):
+        BedrockLLMProvider(
+            chat_model_id="anthropic.claude-haiku-4-5-20251001-v1:0",
+            guardrail_id=guardrail_id,
+            guardrail_version=guardrail_version,
+            client=_MockBedrockClient(),
+        )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"stopReason": "guardrail_intervened"},
+        {
+            "stopReason": "end_turn",
+            "guardrailAction": "INTERVENED",
+            "output": {"message": {"content": [{"text": "blocked"}]}},
+        },
+    ],
+)
+async def test_bedrock_chat_llm_fails_closed_on_guardrail_intervention(
+    response: dict[str, Any],
+) -> None:
+    provider = BedrockLLMProvider(
+        chat_model_id="anthropic.claude-haiku-4-5-20251001-v1:0",
+        guardrail_id="gr-12345",
+        guardrail_version="1",
+        client=_MockBedrockClient(canned_response=response),
+    )
+
+    with pytest.raises(UpstreamError, match="blocked by safety controls"):
+        await provider.generate(
+            GenerationRequest(messages=[Message(role="user", content="unsafe request")])
+        )
+
+
 async def test_bedrock_chat_llm_handles_client_exception() -> None:
     client = _MockBedrockClient(
         canned_response=RuntimeError("Bedrock throttling exception: Rate limit exceeded")
@@ -135,6 +184,10 @@ async def test_bedrock_chat_llm_handles_client_exception() -> None:
         {
             "output": {"message": {"content": [{"text": "valid"}]}},
             "metrics": {"latencyMs": -10},
+        },
+        {
+            "output": {"message": {"content": [{"text": "valid"}]}},
+            "guardrailAction": {"unexpected": "shape"},
         },
     ],
 )

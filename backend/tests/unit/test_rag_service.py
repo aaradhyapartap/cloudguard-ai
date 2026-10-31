@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from uuid import UUID
 
 import pytest
@@ -41,8 +42,14 @@ def _make_principal(
 
 
 class _RecordingLLMProvider(LLMProvider):
-    def __init__(self, canned_response: str = "Synthesized answer with [S1].") -> None:
+    def __init__(
+        self,
+        canned_response: str = "Synthesized answer with [S1].",
+        *,
+        guardrail_action: str | None = None,
+    ) -> None:
         self.canned_response = canned_response
+        self.guardrail_action = guardrail_action
         self.calls: list[GenerationRequest] = []
 
     @property
@@ -59,8 +66,18 @@ class _RecordingLLMProvider(LLMProvider):
             usage=TokenUsage(input_tokens=100, output_tokens=30),
             stop_reason="end_turn",
             latency_ms=10,
+            guardrail_action=self.guardrail_action,
             generated_at=datetime.now(UTC),
         )
+
+
+def _extract_untrusted_context(prompt: str, name: str) -> str:
+    nonce_match = re.search(r"^BOUNDARY NONCE: ([0-9a-f]{32})$", prompt, re.MULTILINE)
+    assert nonce_match is not None
+    nonce = nonce_match.group(1)
+    start_marker = f"BEGIN_UNTRUSTED_CONTEXT_{name}_{nonce}\n"
+    end_marker = f"\nEND_UNTRUSTED_CONTEXT_{name}_{nonce}"
+    return prompt.split(start_marker, maxsplit=1)[1].split(end_marker, maxsplit=1)[0]
 
 
 class _FailingLLMProvider(LLMProvider):
@@ -141,6 +158,7 @@ async def test_rag_service_generates_grounded_answer_with_sources() -> None:
     assert len(llm_provider.calls) == 1
     gen_call = llm_provider.calls[0]
     assert gen_call.system_prompt is not None
+    assert "MODEL INPUT AUTHORITY POLICY" in gen_call.system_prompt
     assert "CRITICAL SECURITY AND ACCURACY RULES" in gen_call.system_prompt
     assert "untrusted document text" in gen_call.system_prompt
 
@@ -282,7 +300,7 @@ async def test_rag_prompt_injection_safety_boundaries() -> None:
 
     # 2. Malicious text is isolated exclusively inside the delimited REFERENCE CONTEXT section
     user_content = gen_call.messages[0].content
-    assert "REFERENCE CONTEXT (UNTRUSTED DOCUMENT DATA):" in user_content
+    assert "BEGIN_UNTRUSTED_CONTEXT_REFERENCE_EVIDENCE_" in user_content
     assert malicious_text in user_content
 
 
@@ -376,11 +394,7 @@ async def test_rag_context_size_bounding_first_chunk_larger_than_budget() -> Non
     assert response.sources[0].chunk_id == "chunk-massive"
 
     user_prompt = llm_provider.calls[0].messages[0].content
-    # Extract reference context between delimiters
-    delim = "----------------------------------------\n"
-    start_idx = user_prompt.find(delim) + len(delim)
-    end_idx = user_prompt.find(delim, start_idx)
-    extracted_context = user_prompt[start_idx : end_idx - 1]
+    extracted_context = _extract_untrusted_context(user_prompt, "REFERENCE_EVIDENCE")
 
     assert len(extracted_context) <= cap
     assert "[S1] document_id=" in extracted_context
@@ -426,10 +440,10 @@ async def test_rag_context_actual_rendered_length_strictly_under_cap() -> None:
         await rag_service.generate_answer(principal=principal, request=request)
 
         user_prompt = llm_provider.calls[-1].messages[0].content
-        delim = "----------------------------------------\n"
-        start_idx = user_prompt.find(delim) + len(delim)
-        end_idx = user_prompt.find(delim, start_idx)
-        extracted_context = user_prompt[start_idx : end_idx - 1]
+        extracted_context = _extract_untrusted_context(
+            user_prompt,
+            "REFERENCE_EVIDENCE",
+        )
 
         assert len(extracted_context) <= test_cap
 
@@ -519,3 +533,68 @@ async def test_rag_rejects_empty_generation_response() -> None:
 
     with pytest.raises(UpstreamError, match=r"The model generation request failed\."):
         await rag_service.generate_answer(principal=principal, request=request)
+
+
+@pytest.mark.parametrize("invented_label", ["S0", "S2", "S999"])
+async def test_rag_rejects_invented_source_citations(invented_label: str) -> None:
+    embeddings = MockEmbeddingProvider()
+    vector_store = InMemoryVectorStore()
+    await vector_store.upsert(
+        [
+            VectorRecord(
+                chunk_id="chunk-1",
+                document_id=str(DOC_ID_1),
+                organization_id=str(ORG_A),
+                embedding=[0.0] * 1024,
+                content="Some policy text.",
+                metadata={"confidentiality_level": "internal"},
+            )
+        ]
+    )
+    service = RAGService(
+        retrieval_service=RetrievalService(
+            embedding_provider=embeddings,
+            vector_store=vector_store,
+        ),
+        llm_provider=_RecordingLLMProvider(
+            canned_response=f"Invented evidence [{invented_label}]."
+        ),
+    )
+
+    with pytest.raises(UpstreamError, match="invalid or untrusted source reference"):
+        await service.generate_answer(
+            principal=_make_principal(),
+            request=RAGRequest(query="test query", top_k=5),
+        )
+
+
+async def test_rag_rejects_provider_neutral_guardrail_intervention() -> None:
+    embeddings = MockEmbeddingProvider()
+    vector_store = InMemoryVectorStore()
+    await vector_store.upsert(
+        [
+            VectorRecord(
+                chunk_id="chunk-1",
+                document_id=str(DOC_ID_1),
+                organization_id=str(ORG_A),
+                embedding=[0.0] * 1024,
+                content="Some policy text.",
+                metadata={"confidentiality_level": "internal"},
+            )
+        ]
+    )
+    service = RAGService(
+        retrieval_service=RetrievalService(
+            embedding_provider=embeddings,
+            vector_store=vector_store,
+        ),
+        llm_provider=_RecordingLLMProvider(
+            guardrail_action="INTERVENED",
+        ),
+    )
+
+    with pytest.raises(UpstreamError, match=r"The model generation request failed\."):
+        await service.generate_answer(
+            principal=_make_principal(),
+            request=RAGRequest(query="test query", top_k=5),
+        )

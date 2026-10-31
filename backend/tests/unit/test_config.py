@@ -61,6 +61,7 @@ def test_production_agent_worker_accepts_bedrock_llm() -> None:
     worker = AgentWorkerSettings(
         environment=Environment.PROD,
         llm_provider="bedrock",
+        bedrock={"guardrail_id": "gr-production", "guardrail_version": "1"},
     )
 
     assert worker.llm_provider == "bedrock"
@@ -91,6 +92,7 @@ def production_settings(**overrides: object) -> Settings:
         "identity_provider": "cognito",
         "cognito": {"user_pool_id": "us-east-1_Pool", "client_id": "client-123"},
         "cors_origins": ["https://console.cloudguard.example"],
+        "bedrock": {"guardrail_id": "gr-production", "guardrail_version": "1"},
     }
     base.update(overrides)
     return Settings(**base)  # type: ignore[arg-type]
@@ -163,6 +165,35 @@ def test_cors_origins_are_deduplicated() -> None:
 def test_production_rejects_insecure_cors_origin() -> None:
     with pytest.raises(ValidationError, match="prod CORS origins must use https"):
         production_settings(cors_origins=["http://console.cloudguard.example"])
+
+
+@pytest.mark.parametrize(
+    "bedrock",
+    [
+        {"guardrail_id": "gr-only"},
+        {"guardrail_version": "1"},
+        {"guardrail_id": "   ", "guardrail_version": "1"},
+        {"guardrail_id": "gr-only", "guardrail_version": "   "},
+    ],
+)
+def test_guardrail_id_and_version_must_be_configured_together(
+    bedrock: dict[str, str],
+) -> None:
+    with pytest.raises(ValidationError, match="must be configured together"):
+        Settings(bedrock=bedrock)
+
+
+def test_production_api_requires_bedrock_guardrail() -> None:
+    with pytest.raises(ValidationError, match="requires a configured guardrail"):
+        production_settings(bedrock={})
+
+
+def test_production_agent_worker_requires_bedrock_guardrail() -> None:
+    with pytest.raises(ValidationError, match="requires a configured guardrail"):
+        AgentWorkerSettings(
+            environment=Environment.PROD,
+            llm_provider="bedrock",
+        )
 
 
 def test_database_dsn_is_built_from_parts() -> None:

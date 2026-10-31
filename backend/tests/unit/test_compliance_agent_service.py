@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock
@@ -239,6 +240,22 @@ async def test_compliance_agent_executes_bounded_two_call_flow() -> None:
 
     planning_prompt = llm.calls[0].messages[0].content
     evaluation_prompt = llm.calls[1].messages[0].content
+
+    planning_nonce = re.search(r"BOUNDARY NONCE: ([0-9a-f]{32})", planning_prompt)
+    evaluation_nonce = re.search(r"BOUNDARY NONCE: ([0-9a-f]{32})", evaluation_prompt)
+    assert planning_nonce is not None
+    assert evaluation_nonce is not None
+    assert planning_nonce.group(1) != evaluation_nonce.group(1)
+
+    assert llm.calls[0].system_prompt is not None
+    assert llm.calls[1].system_prompt is not None
+    assert "MODEL INPUT AUTHORITY POLICY" in llm.calls[0].system_prompt
+    assert "MODEL INPUT AUTHORITY POLICY" in llm.calls[1].system_prompt
+    assert "BEGIN_UNTRUSTED_USER_REQUEST_" in planning_prompt
+    assert "BEGIN_UNTRUSTED_CONTEXT_POLICY_TEXT_" in planning_prompt
+    assert "BEGIN_UNTRUSTED_USER_REQUEST_" in evaluation_prompt
+    assert "BEGIN_UNTRUSTED_CONTEXT_POLICY_TEXT_" in evaluation_prompt
+    assert "BEGIN_UNTRUSTED_CONTEXT_REFERENCE_EVIDENCE_" in evaluation_prompt
 
     assert "Logical Access" in planning_prompt
     assert (

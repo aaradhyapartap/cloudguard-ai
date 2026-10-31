@@ -76,6 +76,21 @@ Carry forward the missing regression proving `control_ids=None` cannot accept a
 model-invented UUID. Reject `control_ids=[]` at the contract boundary instead of
 interpreting it as an ambiguous scope.
 
+Implementation and local validation completed on 2026-10-31; commit pending.
+
+- Shared nonce framing and response-safety checks cover all seven generation paths.
+- Production Guardrail configuration and fail-closed intervention handling are implemented.
+- Unknown identifier/tool checks and the reusable adversarial corpus are covered.
+- Omitted control scopes reject invented controls; explicit empty scopes are rejected.
+- Full backend suite: 912 passed, 92% coverage, including PostgreSQL integration tests.
+- Ruff: clean. Mypy: clean across 131 application source files.
+- PostgreSQL revision: 0012. Published migrations unchanged.
+- Exactly 33 expected paths remain unstaged; diff whitespace checks passed.
+- Local validation used Python 3.14; the configured Python 3.12 CI runtime remains
+  a separate verification.
+- Bedrock tests use controlled provider responses, not live AWS Guardrail evaluation.
+  Deployment must provision and configure the Guardrail resource separately.
+
 ## Phase 8.3 - PII and sensitive-data controls
 
 Deliver:

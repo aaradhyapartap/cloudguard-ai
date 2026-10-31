@@ -70,6 +70,7 @@ Changes must preserve all of these properties:
 | Confidentiality | Retrieval levels are calculated from the server-side role-to-clearance mapping. |
 | RAG | Context is bounded, retrieved text is labeled untrusted, zero-evidence requests skip generation, and response sources come from admitted retrieval records rather than model-provided identifiers. |
 | Agents | The graph and tool allowlists are application-owned; tool budgets are bounded; Risk and Reviewer have no tools; invented evidence references fail closed. |
+| Model boundary | Every generation path uses shared nonce-framed separation of user/retrieved text from application policy and trusted identifiers; configured Bedrock Guardrail interventions and unknown identifier/tool references fail closed. |
 | Risk | Authoritative compliance scoring is deterministic and stored with immutable snapshots; model-produced estimates cannot overwrite it. |
 | Approval | Manager-only decisions, immutable decision state, internal task-token recovery, bounded action policy, and transactional side-effect idempotency are enforced. |
 | Audit | Approval audit events are PostgreSQL-backed, append-only, trigger-generated, tenant-scoped, and protected by RLS and least-privilege grants. |
@@ -78,7 +79,7 @@ Changes must preserve all of these properties:
 
 These controls do not imply that every item in the Phase 0 target architecture is
 already implemented. In particular, the repository does not yet provision an API
-Gateway authorizer, WAF, application Bedrock Guardrail, customer-managed KMS keys,
+Gateway authorizer, WAF, Bedrock Guardrail resource, customer-managed KMS keys,
 or a DynamoDB audit subsystem.
 
 ## Deployment security baseline
@@ -99,7 +100,8 @@ Before exposing a non-local environment:
 - restrict S3 writes to application-issued document keys;
 - retain encryption, versioning, public-access blocking, and TLS enforcement;
 - configure log access and retention as sensitive operational data;
-- enable Bedrock Guardrails before production model traffic once Phase 8.2 lands;
+- provision a Bedrock Guardrail and configure both `BEDROCK_GUARDRAIL_ID` and
+  `BEDROCK_GUARDRAIL_VERSION`; production startup rejects missing or partial values;
 - enable bounded rate limits and abuse controls before public traffic once Phase 8.4 lands; and
 - run the Phase 8 security regression suite and blocking dependency/secret scans.
 
@@ -138,9 +140,11 @@ Do not stage or publish if:
 
 The following are open and must not be described as implemented:
 
-- Prompt isolation uses explicit instructions and bounded application checks, but
-  nonce-delimited context, an adversarial injection corpus, Guardrail enforcement,
-  and response scanning remain Phase 8.2 work.
+- Nonce-delimited prompt isolation, a reusable adversarial injection corpus,
+  Guardrail intervention handling, and deterministic identifier/tool validation are
+  implemented. These controls protect application authority but cannot guarantee
+  that adversarial text never influences generated prose. The current CDK source
+  does not provision the Guardrail resource; deployment must supply its ID/version.
 - PII detection, model-context minimization, and comprehensive safe-logging tests
   remain Phase 8.3 work.
 - Endpoint rate limiting, upload quotas, extraction limits, and WAF/API Gateway abuse
@@ -160,7 +164,7 @@ The following are open and must not be described as implemented:
   customer-managed KMS design.
 - Historical migration `0005` may leave indexes absent in databases that applied an
   earlier published version; this must be audited with a forward migration if needed.
-- Phase 6 still needs the explicit `control_ids=None` invented-UUID regression, and
-  empty `control_ids` should be rejected instead of being interpreted ambiguously.
+- The prompt-injection corpus is a bounded regression set, not a substitute for
+  ongoing adversarial evaluation as prompts, models, or tools change.
 
 See the threat register for ownership, severity, and planned disposition.

@@ -184,7 +184,9 @@ See [ADR-0015](docs/adr/0015-token-storage-and-id-tokens.md).
 
 See the [security policy](SECURITY.md),
 [threat model](docs/THREAT_MODEL.md), and
-[authorization matrix](docs/security/AUTHORIZATION_MATRIX.md). These documents
+[authorization matrix](docs/security/AUTHORIZATION_MATRIX.md). The
+[prompt-injection defenses](docs/security/PROMPT_INJECTION_DEFENSES.md) explain the
+model-input and output-validation boundary. These documents
 separate current enforcement from target controls and record residual risk.
 
 ## Licence

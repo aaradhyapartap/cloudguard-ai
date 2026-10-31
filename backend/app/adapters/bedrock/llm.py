@@ -39,6 +39,14 @@ class BedrockLLMProvider(LLMProvider):
     ) -> None:
         if not chat_model_id:
             raise ValueError("Bedrock chat model ID is required.")
+        guardrail_id = (guardrail_id.strip() or None) if guardrail_id else None
+        guardrail_version = (
+            (guardrail_version.strip() or None) if guardrail_version else None
+        )
+        if bool(guardrail_id) != bool(guardrail_version):
+            raise ValueError(
+                "Bedrock guardrail ID and version must be configured together."
+            )
 
         self._chat_model_id = chat_model_id
         self._guardrail_id = guardrail_id
@@ -117,7 +125,30 @@ class BedrockLLMProvider(LLMProvider):
             )
             raise UpstreamError("The model generation request failed.")
 
-        stop_reason = str(response.get("stopReason") or "end_turn")
+        stop_reason = str(response.get("stopReason") or "end_turn").strip().lower()
+        raw_guardrail_action = response.get("guardrailAction")
+        if raw_guardrail_action is not None and not isinstance(
+            raw_guardrail_action, str
+        ):
+            logger.error(
+                "bedrock_converse_invalid_guardrail_action",
+                model_id=self._chat_model_id,
+            )
+            raise UpstreamError("The model generation request failed.")
+
+        guardrail_action = raw_guardrail_action or None
+        if stop_reason == "guardrail_intervened" or (
+            guardrail_action is not None
+            and guardrail_action.strip().lower() not in {"", "none", "no_action"}
+        ):
+            logger.warning(
+                "bedrock_guardrail_intervened",
+                model_id=self._chat_model_id,
+            )
+            raise UpstreamError(
+                "The model generation request was blocked by safety controls."
+            )
+
         output = response.get("output")
         if not isinstance(output, dict):
             logger.error(
@@ -161,9 +192,7 @@ class BedrockLLMProvider(LLMProvider):
                 content_parts.append(text_val)
 
         content_text = "".join(content_parts)
-        if stop_reason == "guardrail_intervened":
-            pass
-        elif not content_parts or not content_text.strip():
+        if not content_parts or not content_text.strip():
             logger.error(
                 "bedrock_converse_empty_text_content",
                 model_id=self._chat_model_id,
@@ -219,5 +248,6 @@ class BedrockLLMProvider(LLMProvider):
             ),
             stop_reason=stop_reason,
             latency_ms=latency_ms,
+            guardrail_action=guardrail_action,
             generated_at=end_time,
         )

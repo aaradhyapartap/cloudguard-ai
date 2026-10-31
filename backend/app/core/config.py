@@ -90,6 +90,23 @@ class BedrockSettings(BaseSettings):
     # billing incident, not just a latency problem.
     max_input_tokens: int = 32_000
 
+    @field_validator("guardrail_id", "guardrail_version")
+    @classmethod
+    def _normalize_guardrail_value(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def _guardrail_configuration_is_complete(self) -> BedrockSettings:
+        if bool(self.guardrail_id) != bool(self.guardrail_version):
+            raise ValueError(
+                "BEDROCK_GUARDRAIL_ID and BEDROCK_GUARDRAIL_VERSION "
+                "must be configured together"
+            )
+        return self
+
 
 class CognitoSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="COGNITO_", extra="ignore")
@@ -266,6 +283,12 @@ class Settings(BaseSettings):
             urlsplit(origin).scheme != "https" for origin in self.cors_origins
         ):
             raise ValueError("prod CORS origins must use https")
+        if self.environment is Environment.PROD and not (
+            self.bedrock.guardrail_id and self.bedrock.guardrail_version
+        ):
+            raise ValueError(
+                "prod Bedrock model generation requires a configured guardrail"
+            )
         return self
 
     @property
@@ -341,6 +364,16 @@ class AgentWorkerSettings(BaseSettings):
                 "prod agent workers must use the bedrock LLM provider, not a test double"
             )
         return value
+
+    @model_validator(mode="after")
+    def _production_guardrail_is_required(self) -> AgentWorkerSettings:
+        if self.environment is Environment.PROD and not (
+            self.bedrock.guardrail_id and self.bedrock.guardrail_version
+        ):
+            raise ValueError(
+                "prod Bedrock model generation requires a configured guardrail"
+            )
+        return self
 
 
 @lru_cache

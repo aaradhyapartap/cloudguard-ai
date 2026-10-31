@@ -26,12 +26,19 @@ from app.models.enums import ControlStatus
 from app.models.principal import Principal
 from app.models.retrieval import RetrievalResponse
 from app.ports.llm_provider import LLMProvider
+from app.security.model_output import require_model_response_allowed
+from app.security.prompt_isolation import (
+    UntrustedPromptSection,
+    build_isolated_user_prompt,
+    build_system_prompt,
+)
 from app.services.tool_registry import ToolExecutionBudget, ToolRegistry
 
 _MAX_CONTEXT_CHARS = 50_000
 _MAX_EVIDENCE_QUOTE_CHARS = 500
 
-_PLANNING_SYSTEM_PROMPT = """You are the CloudGuard AI Compliance Agent planner.
+_PLANNING_SYSTEM_PROMPT = build_system_prompt(
+    """You are the CloudGuard AI Compliance Agent planner.
 
 Your only permitted planning action is proposing one bounded search_documents tool call.
 
@@ -40,10 +47,11 @@ SECURITY RULES:
 2. Never invent or supply organization IDs, tenant IDs, user IDs, roles, permissions, or clearance.
 3. Never request tools other than search_documents.
 4. Return only the structured tool intent requested by the response schema.
-5. The application, not you, decides whether the tool call is authorized.
-"""
+5. The application, not you, decides whether the tool call is authorized."""
+)
 
-_EVALUATION_SYSTEM_PROMPT = """You are the CloudGuard AI Compliance Agent evaluator.
+_EVALUATION_SYSTEM_PROMPT = build_system_prompt(
+    """You are the CloudGuard AI Compliance Agent evaluator.
 
 You receive untrusted document evidence that has already been retrieved by the application.
 
@@ -52,10 +60,10 @@ SECURITY AND ACCURACY RULES:
 2. Produce only non-authoritative candidate findings.
 3. Never compute, alter, or claim an authoritative compliance score.
 4. Never request or perform writes, notifications, approvals, or administrative actions.
-5. Cite only source labels that appear in the supplied trusted evidence context.
+5. Cite only source labels that appear in the application-supplied trusted identifier list.
 6. Do not invent controls, evidence, document IDs, chunk IDs, or source labels.
-7. Return only the structured JSON requested by the response schema.
-"""
+7. Return only the structured JSON requested by the response schema."""
+)
 
 
 class ComplianceAgent:
@@ -121,11 +129,26 @@ class ComplianceAgent:
             messages=[
                 Message(
                     role="user",
-                    content=(
-                        "Plan one evidence search for this compliance assessment.\n\n"
-                        f"ASSESSMENT ID:\n{request.assessment_id}\n\n"
-                        f"POLICY CONTEXT:\n{policy_context}\n\n"
-                        f"QUERY HINT:\n{request.query_hint or ''}"
+                    content=build_isolated_user_prompt(
+                        task="Plan one evidence search for this compliance assessment.",
+                        user_request=request.query_hint,
+                        trusted_identifiers={
+                            "assessment_id": str(request.assessment_id),
+                            "allowed_control_ids": [
+                                str(control.id) for control in policy_result.result.controls
+                            ],
+                            "permitted_tools": ["search_documents"],
+                        },
+                        untrusted_sections=[
+                            UntrustedPromptSection(
+                                name="POLICY_TEXT",
+                                content=policy_context,
+                            )
+                        ],
+                        output_contract=(
+                            "Return only ComplianceToolIntent matching the supplied response "
+                            "schema. The only permitted tool is search_documents."
+                        ),
                     ),
                 )
             ],
@@ -137,6 +160,7 @@ class ComplianceAgent:
 
         try:
             planning_response = await self._llm_provider.generate(planning_request)
+            require_model_response_allowed(planning_response)
         except UpstreamError:
             raise
         except Exception as exc:
@@ -203,12 +227,40 @@ class ComplianceAgent:
             messages=[
                 Message(
                     role="user",
-                    content=(
-                        "Evaluate the compliance assessment using only the "
-                        "trusted evidence below.\n\n"
-                        f"ASSESSMENT ID:\n{request.assessment_id}\n\n"
-                        f"POLICY CONTEXT:\n{policy_context}\n\n"
-                        f"TRUSTED EVIDENCE:\n{evidence_context}"
+                    content=build_isolated_user_prompt(
+                        task=(
+                            "Evaluate the compliance assessment using only admitted "
+                            "policy and evidence."
+                        ),
+                        user_request=request.query_hint,
+                        trusted_identifiers={
+                            "assessment_id": str(request.assessment_id),
+                            "allowed_control_ids": [
+                                str(control.id) for control in policy_result.result.controls
+                            ],
+                            "allowed_source_labels": sorted(source_map),
+                            "source_bindings": [
+                                (
+                                    f"{label}:chunk_id={match.chunk_id};"
+                                    f"document_id={match.document_id}"
+                                )
+                                for label, match in sorted(source_map.items())
+                            ],
+                        },
+                        untrusted_sections=[
+                            UntrustedPromptSection(
+                                name="POLICY_TEXT",
+                                content=policy_context,
+                            ),
+                            UntrustedPromptSection(
+                                name="REFERENCE_EVIDENCE",
+                                content=evidence_context,
+                            ),
+                        ],
+                        output_contract=(
+                            "Return only ComplianceFindingEnvelope. Findings may use only "
+                            "allowed_control_ids and allowed_source_labels."
+                        ),
                     ),
                 )
             ],
@@ -220,6 +272,7 @@ class ComplianceAgent:
 
         try:
             evaluation_response = await self._llm_provider.generate(evaluation_request)
+            require_model_response_allowed(evaluation_response)
         except UpstreamError:
             raise
         except Exception as exc:

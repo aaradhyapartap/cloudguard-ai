@@ -54,7 +54,8 @@ class GenerationResponse(BaseModel):
     usage: TokenUsage
     stop_reason: str
     latency_ms: int
-    # Populated by the Bedrock adapter in Phase 8 when a guardrail intervenes.
+    # Provider-neutral safety metadata. Any intervention fails closed before a
+    # response can be consumed by an application service.
     guardrail_action: str | None = None
     generated_at: datetime
 

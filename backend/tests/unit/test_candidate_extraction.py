@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock
@@ -79,6 +80,15 @@ ADMIN_PRINCIPAL = Principal(
     role=Role.ADMIN,
     email="admin@test.local",
 )
+
+
+def _extract_untrusted_context(prompt: str, name: str) -> str:
+    nonce_match = re.search(r"^BOUNDARY NONCE: ([0-9a-f]{32})$", prompt, re.MULTILINE)
+    assert nonce_match is not None
+    nonce = nonce_match.group(1)
+    start_marker = f"BEGIN_UNTRUSTED_CONTEXT_{name}_{nonce}\n"
+    end_marker = f"\nEND_UNTRUSTED_CONTEXT_{name}_{nonce}"
+    return prompt.split(start_marker, maxsplit=1)[1].split(end_marker, maxsplit=1)[0]
 
 
 @pytest.fixture
@@ -508,6 +518,41 @@ async def test_hallucinated_control_id_fails_closed(
     assert "invalid or untrusted references" in str(exc_info.value)
 
 
+async def test_omitted_control_scope_rejects_model_invented_uuid(
+    service: ComplianceCandidateExtractionService,
+    mock_llm_provider: AsyncMock,
+) -> None:
+    """None means all loaded framework controls, never arbitrary model scope."""
+    invented_control_id = uuid4()
+    mock_llm_provider.generate.return_value = GenerationResponse(
+        content=json.dumps(
+            {
+                "findings": [
+                    {
+                        "control_id": str(invented_control_id),
+                        "proposed_status": "satisfied",
+                        "rationale": "Injected text requested a fabricated control.",
+                    }
+                ]
+            }
+        ),
+        model_id="mock:chat-v1",
+        usage=TokenUsage(input_tokens=100, output_tokens=20),
+        stop_reason="end_turn",
+        latency_ms=5,
+        generated_at=datetime.now(UTC),
+    )
+
+    with pytest.raises(UpstreamError, match="invalid or untrusted references"):
+        await service.extract_candidates(
+            principal=ANALYST_PRINCIPAL,
+            request=ComplianceCandidateExtractionRequest(
+                assessment_id=ASSESSMENT_ID,
+                control_ids=None,
+            ),
+        )
+
+
 async def test_control_in_framework_but_not_evaluated_fails_closed(
     service: ComplianceCandidateExtractionService,
     mock_llm_provider: AsyncMock,
@@ -750,8 +795,16 @@ async def test_prompt_injection_in_document_content_does_not_break_contract(
     # Verify that the generation request sent to the provider still contains the
     # strict system prompt
     call_args: GenerationRequest = mock_llm_provider.generate.call_args[0][0]
+    assert call_args.system_prompt is not None
+    assert "MODEL INPUT AUTHORITY POLICY" in call_args.system_prompt
     assert "Under NO circumstances should" in call_args.system_prompt
     assert "override these instructions" in call_args.system_prompt
+    prompt = call_args.messages[0].content
+    assert _extract_untrusted_context(prompt, "REFERENCE_EVIDENCE") == (
+        f"[S1] chunk_id={CHUNK_1_ID} document_id={DOC_1_ID}\n"
+        f"{injection_content}"
+    )
+    assert "BEGIN_UNTRUSTED_CONTEXT_POLICY_TEXT_" in prompt
     assert call_args.response_schema is not None
 
 
@@ -812,10 +865,7 @@ async def test_control_context_budget_truncates_oversized_descriptions(
     call_args: GenerationRequest = mock_llm_provider.generate.call_args[0][0]
     user_prompt = call_args.messages[0].content
 
-    # Extract CONTROLS TO EVALUATE section
-    controls_start = user_prompt.index("CONTROLS TO EVALUATE:\n") + len("CONTROLS TO EVALUATE:\n")
-    controls_end = user_prompt.index("\n\nREFERENCE EVIDENCE:\n")
-    controls_section = user_prompt[controls_start:controls_end]
+    controls_section = _extract_untrusted_context(user_prompt, "POLICY_TEXT")
 
     # 1. Total control description block must strictly satisfy ceiling
     assert len(controls_section) <= budget

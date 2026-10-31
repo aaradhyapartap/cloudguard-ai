@@ -127,7 +127,11 @@ async def test_research_agent_executes_one_bounded_search() -> None:
     assert generation_request.temperature == 0.0
     assert generation_request.response_schema is not None
     assert generation_request.system_prompt is not None
+    assert "MODEL INPUT AUTHORITY POLICY" in generation_request.system_prompt
     assert "application, not you" in generation_request.system_prompt.lower()
+    prompt = generation_request.messages[0].content
+    assert "BEGIN_UNTRUSTED_USER_REQUEST_" in prompt
+    assert '\"permitted_tools\":[\"search_documents\"]' in prompt
 
 
 @pytest.mark.asyncio

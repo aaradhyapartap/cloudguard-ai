@@ -1,8 +1,8 @@
 # CloudGuard AI Threat Model
 
-- **Version:** 1.0
-- **Review date:** 2026-09-07
-- **Scope baseline:** Phase 7 published commit `fb95230` plus Phase 8.1 API-baseline changes
+- **Version:** 1.1
+- **Review date:** 2026-09-08
+- **Scope baseline:** Phase 8.1 commit `9e0197c` plus Phase 8.2 model-boundary changes
 - **Method:** asset and trust-boundary analysis with a qualitative likelihood/impact register
 
 ## 1. Purpose and scope
@@ -129,9 +129,12 @@ instruction-pattern quarantine are not yet implemented.
 5. Strict output schemas and application checks reject unknown evidence, control,
    or tool references.
 
-Prompt instructions exist, but prompts are not treated as a security boundary.
-Nonce-delimited context, Guardrail enforcement, PII policy, and the adversarial
-corpus are Phase 8.2/8.3 deliverables.
+Prompt instructions are not treated as an authorization boundary. Every generation
+path uses a fresh nonce to frame user and retrieved text separately from application
+policy and trusted identifiers. Bedrock Guardrail intervention metadata fails closed,
+and strict schemas and membership checks reject unknown evidence, control, source,
+and tool identifiers. The adversarial corpus exercises authority escalation attempts.
+PII classification and minimization remain Phase 8.3 deliverables.
 
 ### 6.4 Human approval and execution
 
@@ -163,9 +166,9 @@ the phase must add a control before production use.
 | CG-04 | Cross-tenant SQL caused by a missing application predicate | Medium | High | Explicit tenant parameters plus forced PostgreSQL RLS, `NOBYPASSRLS` runtime role, and migration `0012` exact table grants | Controlled for current tables; every new tenant table requires real PostgreSQL RLS and privilege tests. |
 | CG-05 | Retrieval leaks data above caller clearance or from another tenant | Medium | High | Server-derived filter, vector SQL tenant predicate, RLS, integration tests | Controlled; adversarial cross-tenant corpus remains Phase 8.5. |
 | CG-06 | Malicious or oversized document exhausts storage, parser, memory, embedding, or cost | High | High | Short presign TTL, type quarantine, encrypted-PDF quarantine, bounded text chunks | Open: enforce registered/actual size, page/text/chunk quotas, parser timeouts, and upload rate limits in Phase 8.3/8.4. |
-| CG-07 | Document or user prompt injection changes model behavior | High | High | Untrusted-data instructions, bounded context, deterministic tools and citations | Partial: add nonce-delimited isolation, detection taxonomy, Guardrails, and injection corpus in Phase 8.2. |
-| CG-08 | Model invokes a write/admin/unknown tool or exceeds its budget | Medium | High | Enum/schema validation, per-agent static allowlists, original `Principal`, bounded budget; Risk/Reviewer have no tools | Controlled for current tools; security corpus must prove it remains so. |
-| CG-09 | Model invents evidence, source labels, document IDs, or policy IDs | High | High | Application-owned source map, trusted-ID membership checks, strict output schemas | Partial: add the missing `control_ids=None` regression and reject ambiguous empty control lists. |
+| CG-07 | Document or user prompt injection changes model behavior | High | High | Shared nonce-framed isolation, bounded context, Bedrock Guardrail intervention handling, deterministic tools/citations, adversarial corpus | Controlled for identity, tenant, clearance, tool, approval, write, and score authority; adversarial text may still influence non-authoritative prose. |
+| CG-08 | Model invokes a write/admin/unknown tool or exceeds its budget | Medium | High | Enum/schema validation, per-agent static allowlists, original `Principal`, bounded budget; Risk/Reviewer have no tools | Controlled for current tools and covered by the shared adversarial corpus. |
+| CG-09 | Model invents evidence, source labels, document IDs, or policy IDs | High | High | Application-owned source maps, trusted-ID membership checks, strict output schemas, non-empty explicit control scopes | Controlled, including omitted-scope invented-control and RAG invented-source regressions. |
 | CG-10 | Model output becomes authoritative risk or approval state | Medium | High | Deterministic scorer; advisory models; trusted recommendation builder; Manager-only approval | Controlled; any future action type requires a new explicit policy and tests. |
 | CG-11 | Unauthorized or altered consequential action executes | Medium | High | Persisted human decision reload, bounded action projector/policy, DB insert trigger, tenant constraints | Controlled for `create_security_review`; arbitrary remediation is out of scope. |
 | CG-12 | Task token leaks or is replayed | Medium | High | Token absent from HTTP/domain projections/audit; callback-only IAM; sanitized adapter errors | Partial: field-level encryption and execution-history/log review remain; token is an internal secret capability. |
@@ -215,6 +218,17 @@ Phase 8.1 removes the retired development-principal CORS header, validates exact
 origins, requires HTTPS origins in production, bounds reflected request IDs, and
 requires both document-read and AI-query permission for RAG. These controls reduce
 ambient authority without depending on a model or external service.
+
+### Prompt isolation is defense in depth
+
+Phase 8.2 applies one provider-neutral framing policy to RAG and every agent model
+call. A fresh unpredictable nonce separates the user request and each retrieved or
+upstream-model section from application-authored policy and trusted identifiers.
+Configured Bedrock Guardrail intervention signals are rejected without returning
+generated content. Strict schemas, application-owned allowlists, identifier
+membership checks, deterministic scoring, and human authorization remain the
+enforcement boundary. See
+[`security/PROMPT_INJECTION_DEFENSES.md`](security/PROMPT_INJECTION_DEFENSES.md).
 
 ### Callback ordering is unchanged
 

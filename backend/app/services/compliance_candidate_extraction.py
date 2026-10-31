@@ -25,6 +25,12 @@ from app.models.retrieval import RetrievalRequest
 from app.ports.compliance_repository import ComplianceRepository
 from app.ports.llm_provider import LLMProvider
 from app.security.authz import Permission, require_permission
+from app.security.model_output import require_model_response_allowed
+from app.security.prompt_isolation import (
+    UntrustedPromptSection,
+    build_isolated_user_prompt,
+    build_system_prompt,
+)
 from app.services.retrieval import RetrievalService
 
 logger = get_logger(__name__)
@@ -39,7 +45,8 @@ MAX_RATIONALE_CHARS = 4000
 MAX_RELEVANCE_EXPLANATION_CHARS = 2000
 MAX_EVIDENCE_QUOTE_CHARS = 500
 
-_SYSTEM_PROMPT = """You are CloudGuard AI, an expert enterprise compliance and security auditor.
+_SYSTEM_PROMPT = build_system_prompt(
+    """You are CloudGuard AI, an expert enterprise compliance and security auditor.
 Your task is to analyze compliance controls against retrieved reference evidence and propose
 non-authoritative candidate findings.
 
@@ -54,6 +61,7 @@ unassessed) strictly and solely based on facts provided in the reference sources
 evidence was found. Do NOT fabricate or invent sources.
 5. Return ONLY a valid JSON object matching the requested schema.
 Do not output markdown fences or commentary."""
+)
 
 
 class ComplianceCandidateExtractionService:
@@ -303,18 +311,39 @@ class ComplianceCandidateExtractionService:
 
         controls_desc = "\n".join(control_blocks)
 
-        user_content = (
-            "Evaluate the following compliance controls against the provided "
-            "reference evidence.\n\n"
-            f"CONTROLS TO EVALUATE:\n{controls_desc}\n\n"
-            "REFERENCE EVIDENCE:\n" + "\n\n".join(context_blocks) + "\n\n"
-            "Return a JSON object with a 'findings' array. For each finding provide:\n"
-            "- 'control_id': the exact Control ID string\n"
-            "- 'proposed_status': 'satisfied'|'partially_satisfied'|'deficient'|"
-            "'not_applicable'|'unassessed'\n"
-            "- 'rationale': explanation of why the evidence supports this status\n"
-            "- 'evidence_sources': list of objects with 'source_label' (e.g. 'S1')\n"
-            "- 'confidence': number between 0.0 and 1.0"
+        user_content = build_isolated_user_prompt(
+            task="Propose compliance findings from admitted controls and evidence.",
+            user_request=request.query_hint,
+            trusted_identifiers={
+                "assessment_id": str(assessment.id),
+                "framework_id": str(framework.id),
+                "allowed_control_ids": [str(control.id) for control in target_controls],
+                "allowed_source_labels": sorted(source_label_to_match),
+                "source_bindings": [
+                    (
+                        f"{label}:chunk_id={match.chunk_id};"
+                        f"document_id={match.document_id}"
+                    )
+                    for label, match in sorted(source_label_to_match.items())
+                ],
+            },
+            untrusted_sections=[
+                UntrustedPromptSection(
+                    name="POLICY_TEXT",
+                    content=controls_desc,
+                ),
+                UntrustedPromptSection(
+                    name="REFERENCE_EVIDENCE",
+                    content="\n\n".join(context_blocks),
+                ),
+            ],
+            output_contract=(
+                "Return a JSON object with a findings array. Each finding must use an "
+                "exact allowed control_id; a proposed_status of satisfied, "
+                "partially_satisfied, deficient, not_applicable, or unassessed; an "
+                "evidence-grounded rationale; optional evidence_sources using only exact "
+                "allowed source_label values; and optional confidence from 0.0 to 1.0."
+            ),
         )
 
         response_schema = {
@@ -374,6 +403,7 @@ class ComplianceCandidateExtractionService:
 
         try:
             gen_resp = await self._llm_provider.generate(gen_req)
+            require_model_response_allowed(gen_resp)
         except UpstreamError:
             raise
         except Exception as exc:
