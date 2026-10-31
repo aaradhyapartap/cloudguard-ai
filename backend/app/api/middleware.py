@@ -28,17 +28,17 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestHandler) -> Response:
         request_id = resolve_request_id(request.headers.get("x-request-id"))
         request.state.request_id = request_id
-        bind_request_context(request_id=request_id, route=request.url.path)
+        bind_request_context(request_id=request_id)
 
         started = time.perf_counter()
         try:
             response = await call_next(request)
-        except Exception:
+        except Exception as exc:
             duration_ms = int((time.perf_counter() - started) * 1000)
-            logger.exception(
+            logger.error(
                 "request_failed",
                 method=request.method,
-                path=request.url.path,
+                error_type=type(exc).__name__,
                 duration_ms=duration_ms,
             )
             raise
@@ -48,7 +48,6 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         logger.info(
             "request_completed",
             method=request.method,
-            path=request.url.path,
             status_code=response.status_code,
             duration_ms=duration_ms,
             # organization_id/user_id are already bound by the principal

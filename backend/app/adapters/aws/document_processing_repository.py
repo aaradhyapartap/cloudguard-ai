@@ -73,7 +73,7 @@ class AuroraDataAPIDocumentProcessingRepository(DocumentProcessingRepository):
             logger.error(
                 "aurora_data_api_call_failed",
                 method=method,
-                error=str(exc),
+                error_type=type(exc).__name__,
             )
             raise UpstreamError("Could not access document persistence.") from exc
 
@@ -170,10 +170,10 @@ class AuroraDataAPIDocumentProcessingRepository(DocumentProcessingRepository):
         except Exception:
             try:
                 await self._rollback_transaction(transaction_id)
-            except UpstreamError:
-                logger.exception(
+            except UpstreamError as exc:
+                logger.error(
                     "aurora_data_api_rollback_failed",
-                    transaction_id=transaction_id,
+                    error_type=type(exc).__name__,
                 )
             raise
 

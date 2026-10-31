@@ -111,7 +111,7 @@ class CognitoIdentityProvider(IdentityProvider):
         try:
             document = await self._fetch_jwks()
         except Exception as exc:
-            logger.error("jwks_fetch_failed", error=str(exc))
+            logger.error("jwks_fetch_failed", error_type=type(exc).__name__)
             if not self._keys:
                 raise TokenVerificationError(f"could not load JWKS: {exc}") from exc
             # Stale keys beat no keys: a Cognito blip should not log everyone out.

@@ -142,7 +142,6 @@ def register_exception_handlers(app: FastAPI) -> None:
             "application_error",
             error_code=exc.code.value,
             status_code=exc.status_code,
-            detail=exc.message,
         )
         return _render(exc.status_code, exc.code, exc.message, request, exc.details)
 
@@ -155,14 +154,27 @@ def register_exception_handlers(app: FastAPI) -> None:
             ErrorCode.VALIDATION_FAILED,
             "The request could not be validated.",
             request,
-            {"errors": jsonable_encoder(exc.errors())},
+            {
+                "errors": [
+                    {
+                        "type": "validation_error",
+                        "msg": "Invalid request value.",
+                        "loc": (
+                            [error["loc"][0]]
+                            if error.get("loc")
+                            and error["loc"][0] in {"body", "query", "path", "header", "cookie"}
+                            else []
+                        ),
+                    }
+                    for error in exc.errors()[:50]
+                ]
+            },
         )
 
     @app.exception_handler(Exception)
     async def _handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
-        # Log the detail; return none of it. Stack traces and internal messages
-        # are for operators, not for whoever sent the request.
-        logger.exception("unhandled_exception", exception_type=type(exc).__name__)
+        # Exception messages, chained causes, and traceback locals may be sensitive.
+        logger.error("unhandled_exception", exception_type=type(exc).__name__)
         return _render(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             ErrorCode.INTERNAL_ERROR,

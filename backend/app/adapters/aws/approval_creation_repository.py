@@ -329,7 +329,6 @@ class AuroraDataAPIApprovalCreationRepository(ApprovalCreationRepository):
             except UpstreamError:
                 logger.error(
                     "aurora_data_api_approval_rollback_failed",
-                    transaction_id=transaction_id,
                     error_type="UpstreamError",
                 )
             raise

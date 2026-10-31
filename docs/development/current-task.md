@@ -93,6 +93,16 @@ Implementation and local validation completed on 2026-10-31; commit pending.
 
 ## Phase 8.3 - PII and sensitive-data controls
 
+Slice 1 local validation passed on 2026-10-31; commit pending.
+Validation: 939 backend tests passed, 92% coverage, Ruff clean, and mypy clean
+across 131 source files. PostgreSQL integration tests passed; migrations unchanged.
+Validation used local Python 3.14; Python 3.12 CI remains separately unverified.
+
+Implemented: safe application logging and sanitized
+request-validation errors. See `docs/security/SAFE_LOGGING.md` for the implemented
+boundary and remaining logging/platform risks. This is not completion of Phase 8.3;
+PII detection, model input/output protection, and evidence-projection review remain.
+
 Deliver:
 
 - explicit data classification and PII handling policy;

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Mapping
 from typing import Any
 
 import structlog
@@ -48,25 +49,58 @@ SENSITIVE_KEY_FRAGMENTS: tuple[str, ...] = (
     "private_key",
     "access_key",
     "ssn",
+    "email",
+    "filename",
+    "file_name",
+    "storage_key",
+    "s3_key",
+    "presigned",
+    "prompt",
+    "document_content",
+    "document_body",
+    "embedding",
 )
+
+_SENSITIVE_EXACT_KEYS = frozenset({"error", "detail", "exception", "stack", "body"})
+_MAX_REDACTION_DEPTH = 12
 
 
 def redact_sensitive(
     _logger: WrappedLogger, _name: str, event_dict: EventDict
 ) -> EventDict:
-    """Replace values whose key looks sensitive. Runs on every event."""
+    """Scrub structured application events without rendering opaque objects.
 
-    def _scrub(value: Any, key: str = "") -> Any:
-        lowered = key.lower()
-        if any(fragment in lowered for fragment in SENSITIVE_KEY_FRAGMENTS):
+    Free-text value detection is a separate defense; callers must use static event
+    names and safe identifiers, never exception strings or document text.
+    """
+
+    def _scrub(value: Any, key: str = "", depth: int = 0) -> Any:
+        lowered = key.lower().replace("-", "_")
+        if (
+            depth >= _MAX_REDACTION_DEPTH
+            or lowered in _SENSITIVE_EXACT_KEYS
+            or any(fragment in lowered for fragment in SENSITIVE_KEY_FRAGMENTS)
+        ):
             return REDACTED
-        if isinstance(value, dict):
-            return {k: _scrub(v, k) for k, v in value.items()}
-        if isinstance(value, list):
-            return [_scrub(item) for item in value]
-        return value
+        if isinstance(value, Mapping):
+            return {
+                k: _scrub(v, k, depth + 1)
+                for k, v in value.items()
+                if isinstance(k, str)
+            }
+        if isinstance(value, (list, tuple)):
+            return [_scrub(item, depth=depth + 1) for item in value]
+        if value is None or isinstance(value, (str, bool, int, float)):
+            return value
+        return REDACTED
 
-    return {key: _scrub(value, key) for key, value in event_dict.items()}
+    # Never let a renderer reconstruct an exception, traceback, or stack after
+    # redaction. Chained exceptions can contain credentials and document data.
+    return {
+        key: _scrub(value, key)
+        for key, value in event_dict.items()
+        if key not in {"exc_info", "stack_info"}
+    }
 
 
 def configure_logging(settings: Settings | WorkerSettings | AgentWorkerSettings) -> None:
@@ -76,8 +110,6 @@ def configure_logging(settings: Settings | WorkerSettings | AgentWorkerSettings)
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
         redact_sensitive,  # last before rendering — cannot be bypassed
     ]
 

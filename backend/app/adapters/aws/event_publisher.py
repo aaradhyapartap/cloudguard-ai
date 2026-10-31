@@ -111,7 +111,7 @@ class EventBridgePublisher(EventPublisher):
                 # Deliberately not re-raised — see the module docstring.
                 logger.error(
                     "event_publish_failed",
-                    error=str(exc),
+                    error_type=type(exc).__name__,
                     event_types=[event.event_type for event in chunk],
                     count=len(chunk),
                 )

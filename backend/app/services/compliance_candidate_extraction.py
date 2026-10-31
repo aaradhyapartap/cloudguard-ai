@@ -429,7 +429,7 @@ class ComplianceCandidateExtractionService:
                 organization_id=str(principal.organization_id),
                 assessment_id=str(assessment.id),
                 error_category="malformed_json_root",
-                error=str(exc),
+                error_type=type(exc).__name__,
             )
             raise UpstreamError(
                 "The candidate extraction response contained invalid or untrusted references."

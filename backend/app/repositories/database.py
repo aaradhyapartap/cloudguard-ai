@@ -146,5 +146,5 @@ async def check_database_health() -> bool:
             await session.execute(text("SELECT 1"))
         return True
     except Exception as exc:
-        logger.warning("database_health_check_failed", error=str(exc))
+        logger.warning("database_health_check_failed", error_type=type(exc).__name__)
         return False

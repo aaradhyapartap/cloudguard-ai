@@ -146,7 +146,7 @@ class S3DocumentStore(DocumentStore):
                 )
             )
         except Exception as exc:
-            logger.error("presign_failed", error=str(exc))
+            logger.error("presign_failed", error_type=type(exc).__name__)
             raise UpstreamError("Could not prepare the upload.") from exc
 
         logger.info(
@@ -162,7 +162,7 @@ class S3DocumentStore(DocumentStore):
         except Exception as exc:
             if _error_code(exc) in _NOT_FOUND_CODES:
                 raise NotFoundError() from exc
-            logger.error("s3_get_failed", key=key, error=str(exc))
+            logger.error("s3_get_failed", error_type=type(exc).__name__)
             raise UpstreamError("Could not read the stored document.") from exc
 
         body: bytes = await asyncio.to_thread(response["Body"].read)
@@ -182,7 +182,7 @@ class S3DocumentStore(DocumentStore):
                 ServerSideEncryption="AES256",
             )
         except Exception as exc:
-            logger.error("s3_put_failed", key=key, error=str(exc))
+            logger.error("s3_put_failed", error_type=type(exc).__name__)
             raise UpstreamError("Could not store the document.") from exc
 
     # ------------------------------------------------- upload completion (P3)
@@ -200,7 +200,7 @@ class S3DocumentStore(DocumentStore):
         except Exception as exc:
             if _error_code(exc) in _NOT_FOUND_CODES:
                 return None
-            logger.error("s3_head_failed", key=key, error=str(exc))
+            logger.error("s3_head_failed", error_type=type(exc).__name__)
             raise UpstreamError("Could not verify the uploaded document.") from exc
 
         return {
@@ -219,5 +219,5 @@ class S3DocumentStore(DocumentStore):
         except Exception as exc:
             if _error_code(exc) in _NOT_FOUND_CODES:
                 return
-            logger.error("s3_delete_failed", key=key, error=str(exc))
+            logger.error("s3_delete_failed", error_type=type(exc).__name__)
             raise UpstreamError("Could not delete the stored document.") from exc
