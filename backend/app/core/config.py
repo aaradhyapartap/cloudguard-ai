@@ -192,6 +192,8 @@ class Settings(BaseSettings):
     vector_store: Literal["memory", "pgvector", "s3_vectors"] = "memory"
     document_store: Literal["memory", "s3"] = "memory"
     event_publisher: Literal["memory", "eventbridge"] = "memory"
+    # Local uses bounded process memory; every deployed API requires DynamoDB.
+    rate_limit_table_name: str | None = Field(default=None, min_length=3, max_length=255)
 
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     aws: AWSSettings = Field(default_factory=AWSSettings)

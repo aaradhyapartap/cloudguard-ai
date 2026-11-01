@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 from app.adapters.cognito.identity import CognitoIdentityProvider
 from app.adapters.local.identity import LocalIdentityProvider
+from app.adapters.local.rate_limit_store import InMemoryRateLimitStore
 from app.adapters.mock.document_store import InMemoryDocumentStore
 from app.adapters.mock.embedding import MockEmbeddingProvider
 from app.adapters.mock.event_publisher import InMemoryEventPublisher
@@ -41,6 +42,7 @@ from app.ports.document_store import DocumentStore
 from app.ports.event_publisher import EventPublisher
 from app.ports.identity_provider import IdentityProvider
 from app.ports.llm_provider import EmbeddingProvider, LLMProvider
+from app.ports.rate_limit_store import RateLimitStore
 from app.ports.vector_store import VectorStore
 
 logger = get_logger(__name__)
@@ -68,6 +70,7 @@ class Container:
     vectors: VectorStore
     documents: DocumentStore
     events: EventPublisher
+    rate_limits: RateLimitStore
 
 
 def _build_identity(settings: Settings) -> IdentityProvider:
@@ -207,6 +210,20 @@ def _build_event_publisher(settings: Settings | WorkerSettings) -> EventPublishe
             )
 
 
+def _build_rate_limit_store(settings: Settings) -> RateLimitStore:
+    if settings.environment is Environment.LOCAL:
+        return InMemoryRateLimitStore()
+    if not settings.rate_limit_table_name or not settings.rate_limit_table_name.strip():
+        raise ValueError("Deployed APIs require RATE_LIMIT_TABLE_NAME for shared admission.")
+    from app.adapters.aws.rate_limit_store import DynamoDBRateLimitStore
+
+    return DynamoDBRateLimitStore(
+        table_name=settings.rate_limit_table_name,
+        region=settings.aws.region,
+        endpoint_url=settings.aws.endpoint_url,
+    )
+
+
 def build_container(settings: Settings | None = None) -> Container:
     resolved = settings or get_settings()
     container = Container(
@@ -218,6 +235,7 @@ def build_container(settings: Settings | None = None) -> Container:
         vectors=_build_vector_store(resolved),
         documents=_build_document_store(resolved),
         events=_build_event_publisher(resolved),
+        rate_limits=_build_rate_limit_store(resolved),
     )
     logger.info(
         "container_built",

@@ -48,6 +48,7 @@ def test_deployed_container_binds_bedrock_llm_and_embeddings() -> None:
         llm_provider="bedrock",
         environment=Environment.DEV,
         identity_provider="cognito",
+        rate_limit_table_name="test-rate-limits",
         cognito={"user_pool_id": "us-east-1_mock", "client_id": "mock_client"},
     )
     container = build_container(settings)

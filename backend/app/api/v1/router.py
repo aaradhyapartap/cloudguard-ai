@@ -12,15 +12,16 @@ every other environment, rather than present and guarded.
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app.adapters.local.identity import LocalIdentityProvider
+from app.api.deps import enforce_pre_auth_limit
 from app.api.v1 import approvals, auth, compliance, documents, health, rag, retrieval, system
 from app.core.container import Container
 
 
 def build_api_router(container: Container) -> APIRouter:
-    router = APIRouter()
+    router = APIRouter(dependencies=[Depends(enforce_pre_auth_limit)])
     router.include_router(health.router)
     router.include_router(system.router)
     router.include_router(auth.router)

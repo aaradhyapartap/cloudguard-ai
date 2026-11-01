@@ -178,6 +178,11 @@ refused at startup unless `ENVIRONMENT=local`, and `/auth/dev-login` is absent
 from the routing table elsewhere rather than guarded inside the handler — a
 route that does not exist cannot be misconfigured back into existence.
 
+Existing API routes use centralized request quotas. Non-local API startup now
+requires `RATE_LIMIT_TABLE_NAME`; the API execution role also needs the separate
+counter table's scoped admission grant. This repository does not yet wire an API
+Lambda stack. See [rate-limit policy and deployment requirements](docs/security/RATE_LIMITING.md).
+
 Known limitation, documented rather than buried: the static SPA stores its token
 in `sessionStorage`, so an XSS bug in this application is a session-theft bug.
 See [ADR-0015](docs/adr/0015-token-storage-and-id-tokens.md).

@@ -105,6 +105,13 @@ class RateLimitError(AppError):
     status_code = status.HTTP_429_TOO_MANY_REQUESTS
     message = "Too many requests."
 
+    def __init__(
+        self, message: str | None = None, *, retry_after_seconds: int = 60,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        self.retry_after_seconds = max(1, retry_after_seconds)
+        super().__init__(message, details=details)
+
 
 class UpstreamError(AppError):
     code = ErrorCode.UPSTREAM_UNAVAILABLE
@@ -149,7 +156,10 @@ def register_exception_handlers(app: FastAPI) -> None:
         message = exc.message
         if DeterministicSensitiveDataDetector().detect(message):
             message = type(exc).message
-        return _render(exc.status_code, exc.code, message, request)
+        response = _render(exc.status_code, exc.code, message, request)
+        if isinstance(exc, RateLimitError):
+            response.headers["Retry-After"] = str(exc.retry_after_seconds)
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def _handle_validation(

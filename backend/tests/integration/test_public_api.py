@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
+from app.adapters.local.rate_limit_store import InMemoryRateLimitStore
 from app.core.config import Environment, Settings
 from app.main import create_app
 from fastapi.testclient import TestClient
@@ -125,6 +128,7 @@ def test_dev_login_route_is_absent_when_not_local() -> None:
     settings = Settings(
         environment=Environment.DEV,
         identity_provider="cognito",
+        rate_limit_table_name="test-rate-limits",
         llm_provider="mock",
         cognito={"user_pool_id": "us-east-1_Pool", "client_id": "client-123"},
     )
@@ -139,10 +143,13 @@ def test_cognito_environment_reports_its_issuer() -> None:
     settings = Settings(
         environment=Environment.DEV,
         identity_provider="cognito",
+        rate_limit_table_name="test-rate-limits",
         llm_provider="mock",
         cognito={"user_pool_id": "us-east-1_Pool", "client_id": "client-123"},
     )
-    with TestClient(create_app(settings)) as client:
+    app = create_app(settings)
+    app.state.container = replace(app.state.container, rate_limits=InMemoryRateLimitStore())
+    with TestClient(app) as client:
         body = client.get("/api/v1/auth/config").json()
     assert body["provider"] == "cognito"
     assert body["issuer"].endswith("us-east-1_Pool")

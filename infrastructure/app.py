@@ -25,6 +25,7 @@ import aws_cdk as cdk
 from stacks.agent_workflow_stack import AgentWorkflowStack
 from stacks.identity_stack import IdentityStack
 from stacks.ingestion_stack import IngestionStack
+from stacks.rate_limit_stack import RateLimitStack
 
 app = cdk.App()
 
@@ -40,6 +41,16 @@ identity = IdentityStack(
     environment_name=environment_name,
     env=env,
     description="Cognito user pool, groups and app client for CloudGuard AI",
+)
+
+# This repository does not yet define an API Lambda construct. Its eventual
+# stack must call grant_admission(api_role) and inject RATE_LIMIT_TABLE_NAME.
+rate_limits = RateLimitStack(
+    app,
+    f"CloudGuardRateLimits-{environment_name}",
+    environment_name=environment_name,
+    env=env,
+    description="Single-region shared API request admission counters",
 )
 
 # -----------------------------------------------------------------------------

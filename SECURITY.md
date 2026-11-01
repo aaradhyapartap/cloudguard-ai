@@ -75,6 +75,7 @@ Changes must preserve all of these properties:
 | Approval | Manager-only decisions, immutable decision state, internal task-token recovery, bounded action policy, and transactional side-effect idempotency are enforced. |
 | Audit | Approval audit events are PostgreSQL-backed, append-only, trigger-generated, tenant-scoped, and protected by RLS and least-privilege grants. |
 | API baseline | Exact CORS origins, production HTTPS origins, bounded request identifiers, restrictive API response headers, and production OpenAPI-off defaults are enforced. |
+| API request admission | Central per-peer authentication/login policy and verified user/tenant route quotas; bounded local counters, shared conditional DynamoDB updates outside local, 429 with Retry-After, and fail-closed store failures. Deployment requires the separate counter table and scoped API IAM grant. |
 | Infrastructure | Current Lambda IAM statements are action- and resource-scoped except `states:SendTaskSuccess`, whose API does not support resource-level task-token scoping. S3 public access is blocked and SSL is required. |
 
 These controls do not imply that every item in the Phase 0 target architecture is
@@ -154,8 +155,12 @@ The following are open and must not be described as implemented:
   history remain protected surfaces. See
   [runtime/privacy review](docs/security/PROJECTIONS_AND_RUNTIME_PRIVACY.md) for
   external logging/IAM responsibilities and remaining deployment verification.
-- Endpoint rate limiting, upload quotas, extraction limits, and WAF/API Gateway abuse
-  controls remain Phase 8.4 work.
+- Per-document byte/page/text/chunk budgets and existing API route quotas are
+  implemented. Distributed deployment wiring, edge/WAF limits, workflow/ingestion
+  admission, concurrency, model/retry budgets, parser isolation, and storage-side
+  upload enforcement remain Phase 8.4 work. See
+  [rate limiting](docs/security/RATE_LIMITING.md) and
+  [ingestion budgets](docs/security/INGESTION_BUDGETS.md).
 - The static SPA stores its ID token in `sessionStorage`; XSS can therefore steal a
   session. The hosted-login implementation still requires complete PKCE, state,
   nonce, and callback handling before it is production-ready.

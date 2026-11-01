@@ -11,8 +11,12 @@ Ordering here is a security design — cheapest and most conclusive first:
 1. Extract the bearer token; a malformed header never reaches crypto.
 2. Verify signature, issuer, audience, expiry, token use.
 3. Map claims to a role, failing closed on ambiguity.
-4. Provision or reconcile the local user record.
-5. Bind identity to the logging context so every later line is attributable.
+4. Enforce verified user/tenant budgets before database provisioning.
+5. Provision or reconcile the local user record.
+6. Bind identity to the logging context so every later line is attributable.
+
+A peer quota dependency runs before token verification. These controls do not
+replace authorization, provisioning checks, or tenant Row-Level Security.
 
 Note that the tenant-scoped session depends on the principal. There is no way to
 obtain a database session without having authenticated first — not by
@@ -37,6 +41,13 @@ from app.models.principal import Principal
 from app.ports.identity_provider import TokenVerificationError
 from app.repositories.database import tenant_session
 from app.security.authz import Permission, require_permission
+from app.security.claims import claims_to_principal
+from app.security.rate_limits import (
+    TENANT_MULTIPLIER,
+    authenticated_policy,
+    enforce_rate_limit,
+    pre_auth_policy,
+)
 from app.services.identity import IdentityService
 
 logger = get_logger(__name__)
@@ -59,9 +70,29 @@ SettingsDep = Annotated[Settings, Depends(get_app_settings)]
 ContainerDep = Annotated[Container, Depends(get_app_container)]
 
 
+def _relative_route(request: Request, container: Container) -> str:
+    # The registered template, never a raw path, resource UUID, query, or header.
+    route = getattr(request.scope.get("route"), "path", "")
+    if not isinstance(route, str):
+        return "/unclassified"
+    return route.removeprefix(container.settings.api_v1_prefix)
+
+
+async def enforce_pre_auth_limit(request: Request, container: ContainerDep) -> None:
+    policy = pre_auth_policy(_relative_route(request, container))
+    if policy is not None:
+        # Ignore X-Forwarded-For and organization/user headers. A trusted edge
+        # must supply ASGI client identity; a proxy peer safely shares a bucket.
+        peer = request.client.host if request.client is not None else "unknown-peer"
+        await enforce_rate_limit(
+            container.rate_limits, policy=policy, subject=("peer", peer),
+        )
+
+
 async def get_principal(
     request: Request,
     container: ContainerDep,
+    _admitted: Annotated[None, Depends(enforce_pre_auth_limit)],
     credentials: Annotated[
         HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
     ] = None,
@@ -77,6 +108,20 @@ async def get_principal(
     # leaks a stack trace and reads as a server fault rather than a rejection.
     try:
         claims = await container.identity.verify(credentials.credentials)
+        verified_principal = claims_to_principal(claims)
+        policy = authenticated_policy(request.method, _relative_route(request, container))
+        # Gate before database provisioning and before any route service/model.
+        # Shared buckets prevent quota bypass by changing resource IDs or tokens.
+        await enforce_rate_limit(
+            container.rate_limits, policy=policy,
+            subject=(
+                "user", str(verified_principal.organization_id), str(verified_principal.user_id),
+            ),
+        )
+        await enforce_rate_limit(
+            container.rate_limits, policy=policy, multiplier=TENANT_MULTIPLIER,
+            subject=("tenant", str(verified_principal.organization_id)),
+        )
         # IdentityService manages its own sessions: it reads the untenanted
         # organizations table to learn which tenant this caller belongs to,
         # then writes inside that tenant's context.

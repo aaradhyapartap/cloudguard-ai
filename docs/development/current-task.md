@@ -151,6 +151,26 @@ redaction decisions must remain auditable.
 
 ## Phase 8.4 - Rate limiting and abuse protection
 
+Slice 2 local validation passed on 2026-10-31; commit pending.
+
+- Full backend suite: 1066 passed, 92% coverage, including PostgreSQL integration tests.
+- Infrastructure suite: 40 passed.
+- Backend Ruff: clean. Backend mypy: clean across 139 source files.
+- Infrastructure mypy: clean across 5 source files.
+- PostgreSQL revision: 0012. Published migrations unchanged.
+- Validation used local Python 3.14; Python 3.12 CI remains separately unverified.
+- No deployment, live AWS enforcement evaluation, or external IAM change was performed.
+
+Implemented: centralized request admission for existing
+API routes, per-peer authentication/login quotas, verified user/tenant budgets,
+bounded local counters, and a conditional DynamoDB counter adapter/stack.
+Deployed API composition requires RATE_LIMIT_TABLE_NAME and never falls back to
+process memory. API role/environment wiring, trusted proxy configuration, and
+live shared-counter verification remain deployment requirements. No workflow-start
+HTTP route exists to attach a gate to; workflow/ingestion admission, concurrency,
+model/retry bounds, and edge/WAF controls remain outstanding. See
+`docs/security/RATE_LIMITING.md`. No deployment or migration change is performed.
+
 Slice 1 local validation passed on 2026-10-31; commit pending.
 
 - Full backend suite: 1033 passed, 92% coverage, including PostgreSQL integration tests.
