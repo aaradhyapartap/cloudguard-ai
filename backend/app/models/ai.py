@@ -11,27 +11,49 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.security.model_budgets import (
+    MAX_GENERATION_INPUT_BYTES,
+    MAX_GENERATION_MESSAGES,
+    MAX_GENERATION_OUTPUT_TOKENS,
+    MAX_STOP_SEQUENCE_CHARACTERS,
+    MAX_STOP_SEQUENCES,
+    require_generation_envelope,
+)
 
 
 class Message(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     role: Literal["user", "assistant"]
-    content: str
+    content: str = Field(max_length=MAX_GENERATION_INPUT_BYTES)
 
 
 class GenerationRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    messages: list[Message]
-    system_prompt: str | None = None
-    max_tokens: int = 2048
+    messages: list[Message] = Field(min_length=1, max_length=MAX_GENERATION_MESSAGES)
+    system_prompt: str | None = Field(default=None, max_length=MAX_GENERATION_INPUT_BYTES)
+    max_tokens: int = Field(default=2048, ge=1, le=MAX_GENERATION_OUTPUT_TOKENS)
     temperature: float = Field(default=0.0, ge=0.0, le=1.0)
     # A JSON schema the response must satisfy. Schema-constrained output makes
     # parsing deterministic instead of regex archaeology.
     response_schema: dict[str, Any] | None = None
-    stop_sequences: list[str] = Field(default_factory=list)
+    stop_sequences: list[str] = Field(default_factory=list, max_length=MAX_STOP_SEQUENCES)
+
+    @model_validator(mode="after")
+    def _bounded_envelope(self) -> GenerationRequest:
+        if any(len(stop) > MAX_STOP_SEQUENCE_CHARACTERS for stop in self.stop_sequences):
+            raise ValueError("A stop sequence exceeds the resource budget.")
+        text_characters = sum(len(message.content) for message in self.messages)
+        text_characters += len(self.system_prompt or "") + sum(map(len, self.stop_sequences))
+        if text_characters > MAX_GENERATION_INPUT_BYTES:
+            raise ValueError("The model text exceeds the resource budget.")
+        require_generation_envelope(
+            self.model_dump(mode="json"), max_bytes=MAX_GENERATION_INPUT_BYTES,
+        )
+        return self
 
 
 class TokenUsage(BaseModel):

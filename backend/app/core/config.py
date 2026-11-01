@@ -19,6 +19,8 @@ from urllib.parse import urlsplit
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.security.model_budgets import MAX_GENERATION_INPUT_BYTES, MAX_GENERATION_OUTPUT_TOKENS
+
 
 class Environment(StrEnum):
     LOCAL = "local"
@@ -85,10 +87,13 @@ class BedrockSettings(BaseSettings):
     embedding_dimensions: int = 1024
     guardrail_id: str | None = None
     guardrail_version: str | None = None
-    max_output_tokens: int = 2048
-    # Hard ceiling on context sent to a model. A runaway retrieval loop is a
-    # billing incident, not just a latency problem.
-    max_input_tokens: int = 32_000
+    max_output_tokens: int = Field(default=2048, ge=1, le=MAX_GENERATION_OUTPUT_TOKENS)
+    max_input_bytes: int = Field(
+        default=MAX_GENERATION_INPUT_BYTES, ge=1, le=MAX_GENERATION_INPUT_BYTES,
+    )
+    # Reserved native-token target, not an enforced tokenizer count. The current
+    # Nova Pro reviewer does not support CountTokens; byte bounds above are enforced.
+    max_input_tokens: int = Field(default=32_000, ge=1, le=32_000)
 
     @field_validator("guardrail_id", "guardrail_version")
     @classmethod

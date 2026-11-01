@@ -74,6 +74,7 @@ class AgentWorkflowStack(cdk.Stack):
             ),
             timeout=cdk.Duration.minutes(2),
             memory_size=512,
+            reserved_concurrent_executions=2,
             environment={
                 **common_environment,
                 "VECTOR_STORE": "pgvector",
@@ -95,6 +96,7 @@ class AgentWorkflowStack(cdk.Stack):
             ),
             timeout=cdk.Duration.minutes(2),
             memory_size=512,
+            reserved_concurrent_executions=2,
             environment={
                 **common_environment,
                 "BEDROCK_CHAT_MODEL": chat_model_id,
@@ -111,6 +113,7 @@ class AgentWorkflowStack(cdk.Stack):
             ),
             timeout=cdk.Duration.minutes(2),
             memory_size=512,
+            reserved_concurrent_executions=2,
             environment={
                 **common_environment,
                 "BEDROCK_JUDGE_MODEL": reviewer_model_id,
@@ -337,6 +340,7 @@ class AgentWorkflowStack(cdk.Stack):
         research = sfn_tasks.LambdaInvoke(
             self,
             "ResearchAgent",
+            retry_on_service_exceptions=False,
             lambda_function=self.research_function,
             payload_response_only=True,
             payload=sfn.TaskInput.from_json_path_at("$"),
@@ -345,6 +349,7 @@ class AgentWorkflowStack(cdk.Stack):
         risk = sfn_tasks.LambdaInvoke(
             self,
             "RiskAgent",
+            retry_on_service_exceptions=False,
             lambda_function=self.risk_function,
             payload_response_only=True,
             payload=sfn.TaskInput.from_json_path_at("$"),
@@ -353,6 +358,7 @@ class AgentWorkflowStack(cdk.Stack):
         reviewer = sfn_tasks.LambdaInvoke(
             self,
             "ReviewerAgent",
+            retry_on_service_exceptions=False,
             lambda_function=self.reviewer_function,
             payload_response_only=True,
             payload=sfn.TaskInput.from_json_path_at("$"),
@@ -361,6 +367,7 @@ class AgentWorkflowStack(cdk.Stack):
         approval_wait = sfn_tasks.LambdaInvoke(
             self,
             "WaitForManagerApproval",
+            retry_on_service_exceptions=False,
             lambda_function=self.approval_creation_function,
             integration_pattern=sfn.IntegrationPattern.WAIT_FOR_TASK_TOKEN,
             payload=sfn.TaskInput.from_object(
@@ -380,6 +387,7 @@ class AgentWorkflowStack(cdk.Stack):
         execute_approved_action = sfn_tasks.LambdaInvoke(
             self,
             "ExecuteApprovedAction",
+            retry_on_service_exceptions=False,
             lambda_function=self.approved_action_execution_function,
             payload_response_only=True,
             payload=sfn.TaskInput.from_object(
@@ -394,6 +402,14 @@ class AgentWorkflowStack(cdk.Stack):
             ),
             result_path="$.execution_result",
         )
+
+        # Retry only admission throttles (the function has not started), never
+        # uncertain invocation outcomes or application/model/side-effect errors.
+        for task in (research, risk, reviewer, approval_wait, execute_approved_action):
+            task.add_retry(
+                errors=["Lambda.TooManyRequestsException"],
+                interval=cdk.Duration.seconds(2), backoff_rate=2, max_attempts=2,
+            )
 
         workflow_executed = sfn.Succeed(
             self,

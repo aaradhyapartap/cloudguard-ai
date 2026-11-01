@@ -76,6 +76,7 @@ Changes must preserve all of these properties:
 | Audit | Approval audit events are PostgreSQL-backed, append-only, trigger-generated, tenant-scoped, and protected by RLS and least-privilege grants. |
 | API baseline | Exact CORS origins, production HTTPS origins, bounded request identifiers, restrictive API response headers, and production OpenAPI-off defaults are enforced. |
 | API request admission | Central per-peer authentication/login policy and verified user/tenant route quotas; bounded local counters, shared conditional DynamoDB updates outside local, 429 with Retry-After, and fail-closed store failures. Deployment requires the separate counter table and scoped API IAM grant. |
+| Model/workflow budgets | Generation request envelopes, output bytes/tokens, and embedding batches have explicit ceilings; Bedrock SDK attempts/timeouts and deployed cost-bearing worker concurrency/retries are bounded in source. Native input-token counting and distributed workflow admission remain outstanding. |
 | Infrastructure | Current Lambda IAM statements are action- and resource-scoped except `states:SendTaskSuccess`, whose API does not support resource-level task-token scoping. S3 public access is blocked and SSL is required. |
 
 These controls do not imply that every item in the Phase 0 target architecture is

@@ -93,6 +93,7 @@ class IngestionStack(cdk.Stack):
                 cmd=["app.deployed_document_worker.handler"],
             ),
             timeout=cdk.Duration.minutes(5),
+            reserved_concurrent_executions=2,
             memory_size=512,
             environment={
                 "ENVIRONMENT": environment_name,
@@ -174,10 +175,16 @@ class IngestionStack(cdk.Stack):
         process_document = sfn_tasks.LambdaInvoke(
             self,
             "ProcessDocument",
+            retry_on_service_exceptions=False,
             lambda_function=self.processing_function,
             # Pass the normalized payload directly, not wrapped in a task token
             payload_response_only=True,
             payload=sfn.TaskInput.from_json_path_at("$"),
+        )
+
+        process_document.add_retry(
+            errors=["Lambda.TooManyRequestsException"],
+            interval=cdk.Duration.seconds(2), backoff_rate=2, max_attempts=2,
         )
 
         send_failure_to_dlq = sfn_tasks.SqsSendMessage(
@@ -257,6 +264,8 @@ class IngestionStack(cdk.Stack):
             events_targets.SfnStateMachine(
                 self.state_machine,
                 dead_letter_queue=self.ingestion_dlq,
+                retry_attempts=2,
+                max_event_age=cdk.Duration.hours(1),
             )
         )
 

@@ -19,6 +19,15 @@ from app.models.ai import (
     TokenUsage,
 )
 from app.ports.llm_provider import LLMProvider
+from app.security.model_budgets import (
+    MAX_GENERATION_INPUT_BYTES,
+    MAX_GENERATION_OUTPUT_BYTES,
+    MAX_GENERATION_OUTPUT_TOKENS,
+    ModelBudgetError,
+    require_generation_envelope,
+    require_text_budget,
+)
+from app.security.model_output import require_model_response_allowed
 
 logger = get_logger(__name__)
 
@@ -35,10 +44,15 @@ class BedrockLLMProvider(LLMProvider):
         guardrail_id: str | None = None,
         guardrail_version: str | None = None,
         max_output_tokens: int = 2048,
+        max_input_bytes: int = MAX_GENERATION_INPUT_BYTES,
         client: Any | None = None,
     ) -> None:
         if not chat_model_id:
             raise ValueError("Bedrock chat model ID is required.")
+        if not 1 <= max_output_tokens <= MAX_GENERATION_OUTPUT_TOKENS:
+            raise ValueError("The generation output budget is invalid.")
+        if not 1 <= max_input_bytes <= MAX_GENERATION_INPUT_BYTES:
+            raise ValueError("The generation input budget is invalid.")
         guardrail_id = (guardrail_id.strip() or None) if guardrail_id else None
         guardrail_version = (
             (guardrail_version.strip() or None) if guardrail_version else None
@@ -52,6 +66,7 @@ class BedrockLLMProvider(LLMProvider):
         self._guardrail_id = guardrail_id
         self._guardrail_version = guardrail_version
         self._max_output_tokens = max_output_tokens
+        self._max_input_bytes = max_input_bytes
 
         if client is not None:
             self._client = client
@@ -64,7 +79,10 @@ class BedrockLLMProvider(LLMProvider):
             "bedrock-runtime",
             region_name=region,
             endpoint_url=endpoint_url,
-            config=Config(retries={"max_attempts": 3, "mode": "standard"}),
+            config=Config(
+                connect_timeout=3, read_timeout=60,
+                retries={"total_max_attempts": 1, "mode": "standard"},
+            ),
         )
 
     @property
@@ -73,13 +91,24 @@ class BedrockLLMProvider(LLMProvider):
 
     async def generate(self, request: GenerationRequest) -> GenerationResponse:
         """Invoke Bedrock Converse API for text completion."""
+        try:
+            # Frozen models contain mutable lists; copy/revalidate immediately
+            # before dispatch so model_copy/list mutation cannot bypass limits.
+            request = GenerationRequest.model_validate(
+                request.model_dump(mode="json", warnings="error"),
+            )
+            require_generation_envelope(
+                request.model_dump(mode="json"), max_bytes=self._max_input_bytes,
+            )
+        except (ValueError, TypeError) as exc:
+            raise UpstreamError("The model request exceeds the resource budget.") from exc
         messages: list[dict[str, Any]] = [
             {"role": msg.role, "content": [{"text": msg.content}]}
             for msg in request.messages
         ]
 
         inference_config: dict[str, Any] = {
-            "maxTokens": request.max_tokens or self._max_output_tokens,
+            "maxTokens": min(request.max_tokens, self._max_output_tokens),
             "temperature": request.temperature,
         }
         if request.stop_sequences:
@@ -174,6 +203,7 @@ class BedrockLLMProvider(LLMProvider):
             raise UpstreamError("The model generation request failed.")
 
         content_parts: list[str] = []
+        remaining_bytes = MAX_GENERATION_OUTPUT_BYTES
         for block in content_blocks:
             if not isinstance(block, dict):
                 logger.error(
@@ -189,6 +219,10 @@ class BedrockLLMProvider(LLMProvider):
                         model_id=self._chat_model_id,
                     )
                     raise UpstreamError("The model generation request failed.")
+                try:
+                    remaining_bytes -= require_text_budget(text_val, max_bytes=remaining_bytes)
+                except ModelBudgetError as exc:
+                    raise UpstreamError("The model response exceeds the resource budget.") from exc
                 content_parts.append(text_val)
 
         content_text = "".join(content_parts)
@@ -239,7 +273,7 @@ class BedrockLLMProvider(LLMProvider):
                     )
                     raise UpstreamError("The model generation request failed.") from exc
 
-        return GenerationResponse(
+        result = GenerationResponse(
             content=content_text,
             model_id=self._chat_model_id,
             usage=TokenUsage(
@@ -251,3 +285,5 @@ class BedrockLLMProvider(LLMProvider):
             guardrail_action=guardrail_action,
             generated_at=end_time,
         )
+        require_model_response_allowed(result)
+        return result

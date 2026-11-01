@@ -16,6 +16,11 @@ from app.core.logging import get_logger
 from app.models.ai import EmbeddingResult
 from app.ports.llm_provider import EmbeddingProvider
 from app.ports.vector_store import validate_embedding
+from app.security.model_budgets import (
+    MAX_EMBEDDING_RESPONSE_BYTES,
+    ModelBudgetError,
+    checked_embedding_inputs,
+)
 
 logger = get_logger(__name__)
 
@@ -49,7 +54,10 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
             "bedrock-runtime",
             region_name=region,
             endpoint_url=endpoint_url,
-            config=Config(retries={"max_attempts": 3, "mode": "standard"}),
+            config=Config(
+                connect_timeout=3, read_timeout=30,
+                retries={"total_max_attempts": 1, "mode": "standard"},
+            ),
         )
 
     @property
@@ -58,6 +66,10 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
 
     async def embed(self, texts: list[str]) -> EmbeddingResult:
         """Embed one or more text chunks with Amazon Titan Text Embeddings v2."""
+        try:
+            texts = checked_embedding_inputs(texts)
+        except ModelBudgetError as exc:
+            raise UpstreamError("The embedding request exceeds the resource budget.") from exc
         if not texts:
             return EmbeddingResult(
                 vectors=[],
@@ -108,16 +120,8 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
             )
             raise UpstreamError("The document could not be embedded.") from exc
 
-        raw_body = response.get("body")
         try:
-            if hasattr(raw_body, "read"):
-                data = json.loads(raw_body.read().decode("utf-8"))
-            elif isinstance(raw_body, (str, bytes)):
-                data = json.loads(raw_body)
-            elif isinstance(raw_body, dict):
-                data = raw_body
-            else:
-                raise ValueError("Unexpected Bedrock response body type")
+            data = await asyncio.to_thread(_decode_response_body, response.get("body"))
         except Exception as exc:
             logger.error(
                 "bedrock_embedding_response_decode_failed",
@@ -153,3 +157,32 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
 
         token_count = int(data.get("inputTextTokenCount", 0) or 0)
         return embedding, token_count
+
+
+def _decode_response_body(raw_body: Any) -> Any:
+    """Bound the synchronous response read and always close streaming bodies."""
+    if hasattr(raw_body, "read"):
+        try:
+            pieces: list[bytes] = []
+            received = 0
+            while received <= MAX_EMBEDDING_RESPONSE_BYTES:
+                piece = raw_body.read(MAX_EMBEDDING_RESPONSE_BYTES + 1 - received)
+                if not piece:
+                    break
+                received += len(piece)
+                if received > MAX_EMBEDDING_RESPONSE_BYTES:
+                    raise ModelBudgetError("The embedding response exceeds the resource budget.")
+                pieces.append(piece)
+            return json.loads(b"".join(pieces))
+        finally:
+            raw_body.close()
+    if isinstance(raw_body, (str, bytes)):
+        size = len(raw_body.encode("utf-8")) if isinstance(raw_body, str) else len(raw_body)
+        if size > MAX_EMBEDDING_RESPONSE_BYTES:
+            raise ModelBudgetError("The embedding response exceeds the resource budget.")
+        return json.loads(raw_body)
+    if isinstance(raw_body, dict):
+        if len(json.dumps(raw_body).encode("utf-8")) > MAX_EMBEDDING_RESPONSE_BYTES:
+            raise ModelBudgetError("The embedding response exceeds the resource budget.")
+        return raw_body
+    raise ValueError("Unexpected Bedrock response body type")

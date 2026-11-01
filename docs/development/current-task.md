@@ -151,6 +151,28 @@ redaction decisions must remain auditable.
 
 ## Phase 8.4 - Rate limiting and abuse protection
 
+Slice 3 local validation passed on 2026-11-01; commit pending.
+
+- Full backend suite: 1090 passed, 92% coverage, including PostgreSQL integration tests.
+- Infrastructure suite: 44 passed.
+- Backend Ruff: clean. Backend mypy: clean across 140 source files.
+- Infrastructure mypy: clean across 5 source files.
+- PostgreSQL revision: 0012. Published migrations unchanged.
+- Large-payload parametrizations use short test IDs for Windows compatibility.
+- Validation used local Python 3.14; Python 3.12 CI remains separately unverified.
+- No deployment, live AWS enforcement evaluation, migration, or model replacement was performed.
+
+Implemented: shared generation-envelope/output budgets,
+positive bounded output-token requests, configured Bedrock output caps, embedding
+batch/input/response bounds, explicit single-attempt Bedrock SDK calls, bounded
+Lambda admission-throttle retries, ingestion delivery retries, and reserved
+concurrency for deployed model/ingestion workers. See `docs/security/RESOURCE_BUDGETS.md`.
+Human approval wait, authorization, original evidence, and ingestion DLQ are retained.
+Native input-token counting is not claimed: the configured Nova Pro reviewer does
+not support CountTokens. Workflow-start admission, tenant concurrency, edge/API
+deployment wiring, and live resource-limit verification remain outstanding.
+No deployment, migration, or model replacement is performed by this slice.
+
 Slice 2 local validation passed on 2026-10-31; commit pending.
 
 - Full backend suite: 1066 passed, 92% coverage, including PostgreSQL integration tests.

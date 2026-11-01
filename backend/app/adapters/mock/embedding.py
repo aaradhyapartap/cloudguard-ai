@@ -11,6 +11,7 @@ import math
 
 from app.models.ai import EmbeddingResult
 from app.ports.llm_provider import EmbeddingProvider
+from app.security.model_budgets import checked_embedding_inputs
 
 _MOCK_EMBEDDING_MODEL = "mock:embed-v1"
 
@@ -36,6 +37,7 @@ class MockEmbeddingProvider(EmbeddingProvider):
         return _MOCK_EMBEDDING_MODEL
 
     async def embed(self, texts: list[str]) -> EmbeddingResult:
+        texts = checked_embedding_inputs(texts)
         self.embed_calls.append(texts)
         return EmbeddingResult(
             vectors=[self._deterministic_vector(text) for text in texts],

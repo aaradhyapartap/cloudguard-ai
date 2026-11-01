@@ -129,6 +129,7 @@ def _build_llm(settings: Settings | AgentWorkerSettings) -> LLMProvider:
                 guardrail_id=settings.bedrock.guardrail_id,
                 guardrail_version=settings.bedrock.guardrail_version,
                 max_output_tokens=settings.bedrock.max_output_tokens,
+                max_input_bytes=settings.bedrock.max_input_bytes,
             )
 
 
@@ -149,6 +150,7 @@ def _build_reviewer_llm(settings: Settings | AgentWorkerSettings) -> LLMProvider
                 guardrail_id=settings.bedrock.guardrail_id,
                 guardrail_version=settings.bedrock.guardrail_version,
                 max_output_tokens=settings.bedrock.max_output_tokens,
+                max_input_bytes=settings.bedrock.max_input_bytes,
             )
 
 
