@@ -25,7 +25,7 @@ const LOCAL_ROSTER = [
 ] as const;
 
 export default function LoginPage() {
-  const { status, authConfig, loginLocal, loginHosted } = useAuth();
+  const { status, authConfig, authError, loginLocal, loginHosted } = useAuth();
   const router = useRouter();
   const [email, setEmail] = useState('analyst@acme.test');
   const [error, setError] = useState<string | null>(null);
@@ -49,6 +49,8 @@ export default function LoginPage() {
       setPending(false);
     }
   };
+
+  const displayError = error ?? authError;
 
   return (
     <main className="flex min-h-screen items-center justify-center px-4">
@@ -93,12 +95,12 @@ export default function LoginPage() {
               {pending ? 'Signing in…' : 'Sign in'}
             </button>
 
-            {error && (
+            {displayError && (
               <p
                 role="alert"
                 className="mt-3 border-l-[3px] border-l-[var(--color-error)] bg-[var(--color-surface-sunken)] px-3 py-2 text-sm"
               >
-                {error}
+                {displayError}
               </p>
             )}
 
@@ -114,12 +116,20 @@ export default function LoginPage() {
             </p>
             <button
               type="button"
-              onClick={loginHosted}
+              onClick={() => void loginHosted()}
               disabled={!authConfig?.hosted_ui_domain}
               className="mt-4 w-full rounded-[var(--radius-sm)] bg-[var(--color-rail)] px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-[var(--color-rail-hover)] disabled:opacity-50"
             >
               Continue to sign-in
             </button>
+            {displayError && (
+              <p
+                role="alert"
+                className="mt-3 border-l-[3px] border-l-[var(--color-error)] bg-[var(--color-surface-sunken)] px-3 py-2 text-sm"
+              >
+                {displayError}
+              </p>
+            )}
             {!authConfig && (
               <p className="mt-3 text-xs text-[var(--color-ink-subtle)]">
                 Loading sign-in configuration…

@@ -21,6 +21,8 @@ def ingestion_template() -> assertions.Template:
         aurora_cluster_arn="arn:aws:rds:us-east-1:123456789012:cluster:test-cluster",
         aurora_secret_arn="arn:aws:secretsmanager:us-east-1:123456789012:secret:test-secret",
         event_bus_name="cloudguard-events",
+        admission_table_name="test-admission",
+        admission_table_arn="arn:aws:dynamodb:us-east-1:123456789012:table/test-admission",
         env=cdk.Environment(account="123456789012", region="us-east-1"),
     )
     return assertions.Template.from_stack(stack)
@@ -39,6 +41,8 @@ def agent_workflow_template() -> assertions.Template:
         reviewer_model_id="amazon.nova-pro-v1:0",
         embedding_model_id="amazon.titan-embed-text-v2:0",
         agentic_workflows_enabled=True,
+        admission_table_name="test-admission",
+        admission_table_arn="arn:aws:dynamodb:us-east-1:123456789012:table/test-admission",
         env=cdk.Environment(account="123456789012", region="us-east-1"),
     )
     return assertions.Template.from_stack(stack)

@@ -76,7 +76,7 @@ Changes must preserve all of these properties:
 | Audit | Approval audit events are PostgreSQL-backed, append-only, trigger-generated, tenant-scoped, and protected by RLS and least-privilege grants. |
 | API baseline | Exact CORS origins, production HTTPS origins, bounded request identifiers, restrictive API response headers, and production OpenAPI-off defaults are enforced. |
 | API request admission | Central per-peer authentication/login policy and verified user/tenant route quotas; bounded local counters, shared conditional DynamoDB updates outside local, 429 with Retry-After, and fail-closed store failures. Deployment requires the separate counter table and scoped API IAM grant. |
-| Model/workflow budgets | Generation request envelopes, output bytes/tokens, and embedding batches have explicit ceilings; Bedrock SDK attempts/timeouts and deployed cost-bearing worker concurrency/retries are bounded in source. Native input-token counting and distributed workflow admission remain outstanding. |
+| Model/workflow budgets | Generation, embedding, SDK/retry and Lambda concurrency budgets are bounded in source. Shared tenant worker-step quotas and expiring slots gate Research/Risk/Reviewer and ingestion, and local `AgentWorkflow` requires both `DOCUMENT_READ` and `AI_QUERY` plus `WorkAdmission` (`WorkKind.MODEL`) before model work (admitting one local workflow run rather than each deployed worker step). These are not queued-workflow or approval-wait limits; native input-token counting remains outstanding. |
 | Infrastructure | Current Lambda IAM statements are action- and resource-scoped except `states:SendTaskSuccess`, whose API does not support resource-level task-token scoping. S3 public access is blocked and SSL is required. |
 
 These controls do not imply that every item in the Phase 0 target architecture is
@@ -156,27 +156,37 @@ The following are open and must not be described as implemented:
   history remain protected surfaces. See
   [runtime/privacy review](docs/security/PROJECTIONS_AND_RUNTIME_PRIVACY.md) for
   external logging/IAM responsibilities and remaining deployment verification.
-- Per-document byte/page/text/chunk budgets and existing API route quotas are
-  implemented. Distributed deployment wiring, edge/WAF limits, workflow/ingestion
-  admission, concurrency, model/retry budgets, parser isolation, and storage-side
-  upload enforcement remain Phase 8.4 work. See
+- Per-document budgets, API quotas, model/retry bounds, and shared tenant
+  worker-step admission are implemented in source. Edge/API deployment wiring,
+  workflow-start and queued-workflow limits, API model concurrency, native token
+  budgets, parser isolation, storage-side upload enforcement, and live resource
+  verification remain Phase 8.4 work. Worker leases are not fencing locks or
+  exactly-once execution guarantees. See
   [rate limiting](docs/security/RATE_LIMITING.md) and
-  [ingestion budgets](docs/security/INGESTION_BUDGETS.md).
+  [worker admission](docs/security/WORKER_ADMISSION.md).
 - The static SPA stores its ID token in `sessionStorage`; XSS can therefore steal a
-  session. The hosted-login implementation still requires complete PKCE, state,
-  nonce, and callback handling before it is production-ready.
+  session. The hosted-login client flow implements RFC 7636 PKCE (`S256`), `state`,
+  `nonce`, `/oauth2/token` code exchange, ID token claim validation (`iss`, `aud`,
+  `token_use=id`, `nonce`, `exp`), callback URL scrubbing, and cancellation/logout lifecycle safety verified by `AuthProvider.test.tsx`, while live Cognito
+  integration verification and edge CSP remain deployment requirements.
 - Application JWT verification is implemented, but the current CDK source does not
   yet provision the target API Gateway JWT authorizer.
 - Callback delivery is not distributed exactly once. A provider-success/database-
-  bookkeeping crash window and a callback-delivered/execution-start race remain.
+  bookkeeping crash window remains an inherent cross-system boundary, while the
+  callback-delivered/execution-start commit race is handled by bounded readiness
+  polling (`CallbackDeliveryNotCommittedError`) that rolls back the `FOR UPDATE`
+  row lock between attempts, requires confirmed rollback before any subsequent poll (failing closed with a sanitized `UpstreamError` if rollback fails), and fails closed if `callback_delivered_at` is still
+  uncommitted.
 - Approval task tokens are application-secret and database-protected but are not yet
   encrypted at the application field level.
 - Approval audit is canonical in PostgreSQL; a DynamoDB audit projection does not
   currently exist.
 - S3 and Step Functions currently use AWS-managed encryption rather than the target
   customer-managed KMS design.
-- Historical migration `0005` may leave indexes absent in databases that applied an
-  earlier published version; this must be audited with a forward migration if needed.
+- Historical migration `0005` was audited against `backend/app/repositories/tables.py`
+  and the live PostgreSQL catalog at revision `0012`; all 17 expected indexes and
+  unique constraints are present and verified by `tests/security/test_rls_security.py`
+  without modifying published migrations `0001`–`0012`.
 - The prompt-injection corpus is a bounded regression set, not a substitute for
   ongoing adversarial evaluation as prompts, models, or tools change.
 

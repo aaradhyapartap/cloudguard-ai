@@ -36,6 +36,8 @@ from aws_cdk import (
 )
 from constructs import Construct
 
+from stacks.rate_limit_stack import grant_worker_admission
+
 
 class AgentWorkflowStack(cdk.Stack):
     """Fixed Research -> Risk -> Reviewer -> human Approval workflow."""
@@ -52,6 +54,8 @@ class AgentWorkflowStack(cdk.Stack):
         reviewer_model_id: str,
         embedding_model_id: str,
         agentic_workflows_enabled: bool,
+        admission_table_name: str,
+        admission_table_arn: str,
         **kwargs: object,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)  # type: ignore[arg-type]
@@ -83,6 +87,7 @@ class AgentWorkflowStack(cdk.Stack):
                 "DB_NAME": "cloudguard",
                 "BEDROCK_CHAT_MODEL": chat_model_id,
                 "BEDROCK_EMBEDDING_MODEL": embedding_model_id,
+                "RATE_LIMIT_TABLE_NAME": admission_table_name,
             },
         )
 
@@ -100,6 +105,7 @@ class AgentWorkflowStack(cdk.Stack):
             environment={
                 **common_environment,
                 "BEDROCK_CHAT_MODEL": chat_model_id,
+                "RATE_LIMIT_TABLE_NAME": admission_table_name,
             },
         )
 
@@ -117,8 +123,12 @@ class AgentWorkflowStack(cdk.Stack):
             environment={
                 **common_environment,
                 "BEDROCK_JUDGE_MODEL": reviewer_model_id,
+                "RATE_LIMIT_TABLE_NAME": admission_table_name,
             },
         )
+
+        for function in (self.research_function, self.risk_function, self.reviewer_function):
+            grant_worker_admission(function, table_arn=admission_table_arn)
 
         self.approval_creation_function = lambda_.DockerImageFunction(
             self,

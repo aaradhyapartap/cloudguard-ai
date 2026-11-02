@@ -42,3 +42,6 @@ def test_api_grant_is_update_only_and_table_scoped() -> None:
     if not isinstance(resources, list):
         resources = [resources]
     assert resources == [{"Fn::GetAtt": [logical_id, "Arn"]}]
+    assert statements[0]["Condition"] == {
+        "ForAllValues:StringLike": {"dynamodb:LeadingKeys": ["api:v1:*"]},
+    }

@@ -30,6 +30,8 @@ from aws_cdk import (
 )
 from constructs import Construct
 
+from stacks.rate_limit_stack import grant_worker_admission
+
 
 class IngestionStack(cdk.Stack):
     """S3 bucket, EventBridge rule, Step Functions workflow, and processing Lambda."""
@@ -43,6 +45,8 @@ class IngestionStack(cdk.Stack):
         aurora_cluster_arn: str,
         aurora_secret_arn: str,
         event_bus_name: str,
+        admission_table_name: str,
+        admission_table_arn: str,
         **kwargs: object,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)  # type: ignore[arg-type]
@@ -96,6 +100,7 @@ class IngestionStack(cdk.Stack):
             reserved_concurrent_executions=2,
             memory_size=512,
             environment={
+                "RATE_LIMIT_TABLE_NAME": admission_table_name,
                 "ENVIRONMENT": environment_name,
                 "AWS_AURORA_CLUSTER_ARN": aurora_cluster_arn,
                 "AWS_AURORA_SECRET_ARN": aurora_secret_arn,
@@ -171,6 +176,8 @@ class IngestionStack(cdk.Stack):
                 ),
             },
         )
+
+        grant_worker_admission(self.processing_function, table_arn=admission_table_arn)
 
         process_document = sfn_tasks.LambdaInvoke(
             self,

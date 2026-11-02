@@ -16,6 +16,7 @@ from app.models.reviewer_agent import ReviewerAgentRequest
 from app.models.risk_agent import RiskAgentResult
 from app.security.worker_errors import sanitize_worker_failures
 from app.services.reviewer_agent import ReviewerAgent
+from app.services.work_admission import WorkKind
 
 
 class ReviewerWorkflowTaskInput(BaseModel):
@@ -44,14 +45,17 @@ async def _handle(event: dict[str, Any]) -> dict[str, Any]:
 
     agent = ReviewerAgent(llm_provider=_container.reviewer_llm)
 
-    result = await agent.review(
-        principal=task_input.principal,
-        request=ReviewerAgentRequest(
-            question=task_input.question,
-            evidence=task_input.research.to_vector_matches(),
-            risk_estimates=task_input.risk.estimates,
-        ),
-    )
+    async with _container.admission.admit(
+        organization_id=task_input.principal.organization_id, kind=WorkKind.MODEL,
+    ):
+        result = await agent.review(
+            principal=task_input.principal,
+            request=ReviewerAgentRequest(
+                question=task_input.question,
+                evidence=task_input.research.to_vector_matches(),
+                risk_estimates=task_input.risk.estimates,
+            ),
+        )
 
     return {
         "execution_id": task_input.execution_id,

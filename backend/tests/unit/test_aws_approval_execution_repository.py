@@ -1,4 +1,4 @@
-﻿"""Tests for the atomic Aurora approved-action execution repository."""
+"""Tests for the atomic Aurora approved-action execution repository."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from uuid import UUID
 import pytest
 from app.adapters.aws.approval_execution_repository import (
     AuroraDataAPIApprovalExecutionRepository,
+    CallbackDeliveryNotCommittedError,
 )
 from app.core.errors import UpstreamError
 from app.models.approved_action_execution import ActionExecutionDisposition
@@ -459,11 +460,17 @@ async def test_missing_callback_delivery_fails_before_side_effect() -> None:
     )
 
     with pytest.raises(
-        ValueError,
+        CallbackDeliveryNotCommittedError,
         match="requires a delivered workflow callback",
     ):
-        await _repository(
-            client
+        await AuroraDataAPIApprovalExecutionRepository(
+            resource_arn="arn:aws:rds:us-east-1:123456789012:cluster:test",
+            secret_arn="arn:aws:secretsmanager:us-east-1:123456789012:secret:test",
+            database="cloudguard",
+            region="us-east-1",
+            client=client,
+            max_readiness_attempts=3,
+            readiness_backoff_seconds=0.0,
         ).execute_for_workflow(
             organization_id=ORG_ID,
             workflow_execution_id=EXECUTION_ID,
@@ -477,6 +484,48 @@ async def test_missing_callback_delivery_fails_before_side_effect() -> None:
         for call in statements
     )
     assert client.calls[-1][0] == "rollback_transaction"
+
+
+@pytest.mark.asyncio
+async def test_callback_synchronization_race_recovers_after_bounded_poll() -> None:
+    client = RecordingRDSDataClient(
+        callback_delivered=False
+    )
+    slept: list[float] = []
+
+    async def _on_sleep(delay: float) -> None:
+        slept.append(delay)
+        # Simulate callback recovery worker committing mark_callback_delivered
+        # once the execution worker releases its FOR UPDATE lock via rollback.
+        assert client.calls[-1][0] == "rollback_transaction"
+        client.callback_delivered = True
+
+    repo = AuroraDataAPIApprovalExecutionRepository(
+        resource_arn="arn:aws:rds:us-east-1:123456789012:cluster:test",
+        secret_arn="arn:aws:secretsmanager:us-east-1:123456789012:secret:test",
+        database="cloudguard",
+        region="us-east-1",
+        client=client,
+        max_readiness_attempts=3,
+        readiness_backoff_seconds=0.05,
+        sleep=_on_sleep,
+    )
+
+    result = await repo.execute_for_workflow(
+        organization_id=ORG_ID,
+        workflow_execution_id=EXECUTION_ID,
+    )
+
+    assert result.disposition is ActionExecutionDisposition.SUCCEEDED
+    assert slept == [0.05]
+
+    insert_statements = [
+        call
+        for call in _statement_calls(client)
+        if "INSERT INTO security_reviews" in call["sql"]
+    ]
+    assert len(insert_statements) == 1
+    assert client.calls[-1][0] == "commit_transaction"
 
 
 @pytest.mark.asyncio
@@ -507,3 +556,49 @@ async def test_provider_failure_rolls_back_and_is_sanitized() -> None:
 
     assert "rollback_transaction" in names
     assert "commit_transaction" not in names
+
+
+@pytest.mark.asyncio
+async def test_readiness_rollback_failure_aborts_immediately_without_second_poll() -> None:
+    class RollbackFailingClient(RecordingRDSDataClient):
+        def rollback_transaction(self, **kwargs: Any) -> dict[str, object]:
+            self.calls.append(("rollback_transaction", kwargs))
+            raise RuntimeError("secret-rds-rollback-error")
+
+    client = RollbackFailingClient(callback_delivered=False)
+    slept: list[float] = []
+
+    async def _on_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    repo = AuroraDataAPIApprovalExecutionRepository(
+        resource_arn="arn:aws:rds:us-east-1:123456789012:cluster:test",
+        secret_arn="arn:aws:secretsmanager:us-east-1:123456789012:secret:test",
+        database="cloudguard",
+        region="us-east-1",
+        client=client,
+        max_readiness_attempts=4,
+        readiness_backoff_seconds=0.05,
+        sleep=_on_sleep,
+    )
+
+    with pytest.raises(UpstreamError) as caught:
+        await repo.execute_for_workflow(
+            organization_id=ORG_ID,
+            workflow_execution_id=EXECUTION_ID,
+        )
+
+    assert "secret-rds-rollback-error" not in str(caught.value)
+    assert slept == []
+
+    names = [name for name, _ in client.calls]
+    assert names == [
+        "begin_transaction",
+        "execute_statement",
+        "execute_statement",
+        "rollback_transaction",
+    ]
+    assert not any(
+        "INSERT INTO security_reviews" in call["sql"]
+        for call in _statement_calls(client)
+    )

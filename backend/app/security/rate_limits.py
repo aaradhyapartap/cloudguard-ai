@@ -66,14 +66,17 @@ def authenticated_policy(method: str, route: str) -> RatePolicy:
 async def enforce_rate_limit(
     store: RateLimitStore, *, policy: RatePolicy, subject: tuple[str, ...],
     multiplier: int = 1, clock: Callable[[], float] = time.time,
+    namespace: str = "api",
 ) -> None:
     if multiplier < 1:
         raise ValueError("The quota multiplier must be positive.")
+    if namespace not in {"api", "worker"}:
+        raise ValueError("The admission namespace is invalid.")
     now = clock()
     window = math.floor(now / policy.window_seconds)
     window_end = (window + 1) * policy.window_seconds
     digest = hashlib.sha256(json.dumps(subject, separators=(",", ":")).encode()).hexdigest()
-    key = f"v1:{policy.name}:{policy.window_seconds}:{window}:{digest}"
+    key = f"{namespace}:v1:{policy.name}:{policy.window_seconds}:{window}:{digest}"
     try:
         admitted = await store.consume(
             key=key, limit=policy.requests * multiplier, expires_at=window_end,

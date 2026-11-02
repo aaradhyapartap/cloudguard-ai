@@ -15,6 +15,7 @@ from app.models.principal import Principal
 from app.models.risk_agent import RiskAgentRequest
 from app.security.worker_errors import sanitize_worker_failures
 from app.services.risk_agent import RiskAgent
+from app.services.work_admission import WorkKind
 
 
 class RiskWorkflowTaskInput(BaseModel):
@@ -42,13 +43,16 @@ async def _handle(event: dict[str, Any]) -> dict[str, Any]:
 
     agent = RiskAgent(llm_provider=_container.llm)
 
-    result = await agent.assess(
-        principal=task_input.principal,
-        request=RiskAgentRequest(
-            question=task_input.question,
-            evidence=task_input.research.to_vector_matches(),
-        ),
-    )
+    async with _container.admission.admit(
+        organization_id=task_input.principal.organization_id, kind=WorkKind.MODEL,
+    ):
+        result = await agent.assess(
+            principal=task_input.principal,
+            request=RiskAgentRequest(
+                question=task_input.question,
+                evidence=task_input.research.to_vector_matches(),
+            ),
+        )
 
     return {
         "execution_id": task_input.execution_id,

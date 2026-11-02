@@ -33,6 +33,7 @@ from app.core.logging import configure_logging, get_logger
 from app.models.tenant import TenantScope
 from app.security.worker_errors import sanitize_worker_failures
 from app.services.document_processing import DocumentProcessingService
+from app.services.work_admission import WorkKind
 
 logger = get_logger(__name__)
 
@@ -102,17 +103,19 @@ async def _handle(event: dict[str, Any]) -> None:
     organization_id, document_id = _parse_task_input(event)
 
     scope = TenantScope(organization_id=organization_id)
-    repository = _build_repository()
-
-    service = DocumentProcessingService(
-        scope=scope,
-        repository=repository,
-        document_store=_container.documents,
-        event_publisher=_container.events,
-        vector_store=_container.vectors,
-        embedding_provider=_container.embeddings,
-    )
-    await service.process_document(document_id)
+    async with _container.admission.admit(
+        organization_id=organization_id, kind=WorkKind.INGESTION,
+    ):
+        repository = _build_repository()
+        service = DocumentProcessingService(
+            scope=scope,
+            repository=repository,
+            document_store=_container.documents,
+            event_publisher=_container.events,
+            vector_store=_container.vectors,
+            embedding_provider=_container.embeddings,
+        )
+        await service.process_document(document_id)
 
     logger.info(
         "deployed_document_processing_completed",

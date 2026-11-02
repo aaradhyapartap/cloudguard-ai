@@ -331,6 +331,7 @@ class WorkerSettings(BaseSettings):
     event_publisher: Literal["memory", "eventbridge"] = "memory"
     vector_store: Literal["memory", "pgvector"] = "memory"
     llm_provider: Literal["mock", "recorded", "bedrock"] = "mock"
+    rate_limit_table_name: str | None = Field(default=None, min_length=3, max_length=255)
 
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     aws: AWSSettings = Field(default_factory=AWSSettings)
@@ -356,6 +357,7 @@ class AgentWorkerSettings(BaseSettings):
     log_format: Literal["json", "console"] = "console"
     llm_provider: Literal["mock", "recorded", "bedrock"] = "mock"
     vector_store: Literal["memory", "pgvector"] = "memory"
+    rate_limit_table_name: str | None = Field(default=None, min_length=3, max_length=255)
 
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     aws: AWSSettings = Field(default_factory=AWSSettings)

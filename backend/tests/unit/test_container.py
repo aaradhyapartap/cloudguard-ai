@@ -62,6 +62,7 @@ def test_deployed_container_binds_bedrock_llm_and_embeddings() -> None:
 
 def test_worker_container_binds_all_required_ports() -> None:
     worker_settings = WorkerSettings(
+        rate_limit_table_name="test-admission",
         environment=Environment.DEV,
         vector_store="pgvector",
         llm_provider="bedrock",
@@ -79,6 +80,7 @@ def test_worker_container_binds_all_required_ports() -> None:
 
 def test_research_agent_worker_container_binds_retrieval_dependencies() -> None:
     settings = AgentWorkerSettings(
+        rate_limit_table_name="test-admission",
         environment=Environment.DEV,
         llm_provider="bedrock",
         vector_store="pgvector",
@@ -99,6 +101,7 @@ def test_research_agent_worker_container_binds_retrieval_dependencies() -> None:
 
 def test_risk_agent_worker_container_binds_only_generator_llm() -> None:
     settings = AgentWorkerSettings(
+        rate_limit_table_name="test-admission",
         environment=Environment.DEV,
         llm_provider="bedrock",
     )
@@ -111,6 +114,7 @@ def test_risk_agent_worker_container_binds_only_generator_llm() -> None:
 
 def test_reviewer_agent_worker_container_binds_only_reviewer_llm() -> None:
     settings = AgentWorkerSettings(
+        rate_limit_table_name="test-admission",
         environment=Environment.DEV,
         llm_provider="bedrock",
     )

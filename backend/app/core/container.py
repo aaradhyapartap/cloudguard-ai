@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from app.adapters.cognito.identity import CognitoIdentityProvider
 from app.adapters.local.identity import LocalIdentityProvider
 from app.adapters.local.rate_limit_store import InMemoryRateLimitStore
+from app.adapters.local.work_lease_store import InMemoryWorkLeaseStore
 from app.adapters.mock.document_store import InMemoryDocumentStore
 from app.adapters.mock.embedding import MockEmbeddingProvider
 from app.adapters.mock.event_publisher import InMemoryEventPublisher
@@ -44,6 +45,7 @@ from app.ports.identity_provider import IdentityProvider
 from app.ports.llm_provider import EmbeddingProvider, LLMProvider
 from app.ports.rate_limit_store import RateLimitStore
 from app.ports.vector_store import VectorStore
+from app.services.work_admission import WorkAdmission
 
 logger = get_logger(__name__)
 
@@ -212,17 +214,37 @@ def _build_event_publisher(settings: Settings | WorkerSettings) -> EventPublishe
             )
 
 
-def _build_rate_limit_store(settings: Settings) -> RateLimitStore:
+def _build_rate_limit_store(
+    settings: Settings | WorkerSettings | AgentWorkerSettings,
+) -> RateLimitStore:
     if settings.environment is Environment.LOCAL:
         return InMemoryRateLimitStore()
     if not settings.rate_limit_table_name or not settings.rate_limit_table_name.strip():
-        raise ValueError("Deployed APIs require RATE_LIMIT_TABLE_NAME for shared admission.")
+        raise ValueError("Deployed runtimes require RATE_LIMIT_TABLE_NAME for shared admission.")
     from app.adapters.aws.rate_limit_store import DynamoDBRateLimitStore
 
     return DynamoDBRateLimitStore(
         table_name=settings.rate_limit_table_name,
         region=settings.aws.region,
         endpoint_url=settings.aws.endpoint_url,
+    )
+
+
+def build_work_admission(
+    settings: Settings | WorkerSettings | AgentWorkerSettings,
+) -> WorkAdmission:
+    rates = _build_rate_limit_store(settings)
+    if settings.environment is Environment.LOCAL:
+        return WorkAdmission(leases=InMemoryWorkLeaseStore(), rates=rates)
+    from app.adapters.aws.work_lease_store import DynamoDBWorkLeaseStore
+
+    assert settings.rate_limit_table_name is not None
+    return WorkAdmission(
+        leases=DynamoDBWorkLeaseStore(
+            table_name=settings.rate_limit_table_name, region=settings.aws.region,
+            endpoint_url=settings.aws.endpoint_url,
+        ),
+        rates=rates,
     )
 
 
@@ -260,6 +282,7 @@ class WorkerContainer:
     events: EventPublisher
     vectors: VectorStore
     embeddings: EmbeddingProvider
+    admission: WorkAdmission
 
 
 def build_worker_container(
@@ -272,6 +295,7 @@ def build_worker_container(
         events=_build_event_publisher(resolved),
         vectors=_build_vector_store(resolved),
         embeddings=_build_embeddings(resolved),
+        admission=build_work_admission(resolved),
     )
     logger.info(
         "worker_container_built",
@@ -291,6 +315,7 @@ class ResearchAgentWorkerContainer:
     llm: LLMProvider
     embeddings: EmbeddingProvider
     vectors: VectorStore
+    admission: WorkAdmission
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,6 +324,7 @@ class RiskAgentWorkerContainer:
 
     settings: AgentWorkerSettings
     llm: LLMProvider
+    admission: WorkAdmission
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,6 +333,7 @@ class ReviewerAgentWorkerContainer:
 
     settings: AgentWorkerSettings
     reviewer_llm: LLMProvider
+    admission: WorkAdmission
 
 
 def build_research_agent_worker_container(
@@ -319,6 +346,7 @@ def build_research_agent_worker_container(
         llm=_build_llm(resolved),
         embeddings=_build_embeddings(resolved),
         vectors=_build_vector_store(resolved),
+        admission=build_work_admission(resolved),
     )
 
 
@@ -330,6 +358,7 @@ def build_risk_agent_worker_container(
     return RiskAgentWorkerContainer(
         settings=resolved,
         llm=_build_llm(resolved),
+        admission=build_work_admission(resolved),
     )
 
 
@@ -341,4 +370,5 @@ def build_reviewer_agent_worker_container(
     return ReviewerAgentWorkerContainer(
         settings=resolved,
         reviewer_llm=_build_reviewer_llm(resolved),
+        admission=build_work_admission(resolved),
     )

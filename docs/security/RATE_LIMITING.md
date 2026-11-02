@@ -82,7 +82,10 @@ CORS-exposed. No counters or provider error strings are returned to clients.
 `RateLimitStack` provisions one retained, deletion-protected, on-demand,
 AWS-managed-encrypted table with TTL. It is separate from PostgreSQL approval
 audit, and is not an audit projection or dual write. Its `grant_admission` helper
-grants only dynamodb:UpdateItem on that table.
+grants only dynamodb:UpdateItem on that table, restricted to `api:v1:*` keys.
+Phase 8.4d also uses this operational table for worker quotas and expiring slots,
+with disjoint namespaces and scoped worker grants. See
+`WORKER_ADMISSION.md` for rollout and failure semantics.
 
 The repository does not yet define an API Lambda stack or workflow-start HTTP
 route. Therefore the new table is NOT automatically connected to an API role.
@@ -98,8 +101,8 @@ Also required before production readiness:
   concurrent admission across real Lambda instances;
 - edge/API Gateway/WAF controls for volumetric abuse, counter-store costs,
   high-cardinality peer attacks, and pre-dependency parser/body work;
-- workflow-start/ingestion admission and bounded concurrent cost-bearing work;
-- complete model input/output and workflow retry/cost budgets;
+- workflow-start admission, queued-workflow limits, and API model concurrency;
+- live verification of worker admission and model/retry budgets implemented in source;
 - storage-side upload limits and parser CPU/decompression isolation; and
 - Python 3.12 CI and full PostgreSQL-backed regressions.
 

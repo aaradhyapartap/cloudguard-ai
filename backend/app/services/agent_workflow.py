@@ -18,6 +18,8 @@ from app.models.reviewer_agent import (
     ReviewerAgentResult,
 )
 from app.models.risk_agent import RiskAgentRequest, RiskAgentResult
+from app.security.authz import Permission, require_permission
+from app.services.work_admission import WorkAdmission, WorkKind
 
 
 class ResearchAgentPort(Protocol):
@@ -54,7 +56,16 @@ class ReviewerAgentPort(Protocol):
 
 
 class AgentWorkflow:
-    """Execute the fixed Research -> Risk -> Reviewer graph."""
+    """Execute the fixed Research -> Risk -> Reviewer graph.
+
+    Note on admission semantics:
+    ``AgentWorkflow.run`` gates the entire local in-process workflow under a
+    single ``WorkKind.MODEL`` admission lease and minute debit before invoking
+    Research. That bounds local workflow starts, which is distinct from the
+    deployed Step Functions topology where Research, Risk, and Reviewer Lambda
+    workers each acquire and release their own per-step ``WorkKind.MODEL``
+    admission lease independently.
+    """
 
     def __init__(
         self,
@@ -63,11 +74,13 @@ class AgentWorkflow:
         risk_agent: RiskAgentPort,
         reviewer_agent: ReviewerAgentPort,
         enabled: bool,
+        admission: WorkAdmission,
     ) -> None:
         self._research_agent = research_agent
         self._risk_agent = risk_agent
         self._reviewer_agent = reviewer_agent
         self._enabled = enabled
+        self._admission = admission
 
     async def run(
         self,
@@ -79,6 +92,24 @@ class AgentWorkflow:
         if not self._enabled:
             raise RuntimeError("Agentic workflows are disabled.")
 
+        require_permission(principal, Permission.DOCUMENT_READ)
+        require_permission(principal, Permission.AI_QUERY)
+
+        async with self._admission.admit(
+            organization_id=principal.organization_id,
+            kind=WorkKind.MODEL,
+        ):
+            return await self._run_steps(
+                principal=principal,
+                request=request,
+            )
+
+    async def _run_steps(
+        self,
+        *,
+        principal: Principal,
+        request: AgentWorkflowRequest,
+    ) -> AgentWorkflowResult:
         research_result = await self._research_agent.research(
             principal=principal,
             request=ResearchAgentRequest(query=request.question),

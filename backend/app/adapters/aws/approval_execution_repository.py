@@ -1,9 +1,10 @@
-﻿"""Aurora Data API implementation of the Phase 7.5 execution boundary."""
+"""Aurora Data API implementation of the Phase 7.5 execution boundary."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -24,6 +25,13 @@ from app.services.approved_action_policy import (
     validate_phase7_demo_action,
 )
 from app.services.approved_action_projection import ApprovedActionProjector
+
+_DEFAULT_READINESS_ATTEMPTS = 4
+_DEFAULT_READINESS_BACKOFF_SECONDS = 0.05
+
+
+class CallbackDeliveryNotCommittedError(ValueError):
+    """Raised when Step Functions resumes before callback_delivered_at is committed."""
 
 
 def _required_text(
@@ -165,15 +173,29 @@ class AuroraDataAPIApprovalExecutionRepository(
         region: str,
         endpoint_url: str | None = None,
         client: Any | None = None,
+        max_readiness_attempts: int = _DEFAULT_READINESS_ATTEMPTS,
+        readiness_backoff_seconds: float = _DEFAULT_READINESS_BACKOFF_SECONDS,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         if not resource_arn or not secret_arn or not database:
             raise ValueError(
                 "Approval execution requires Aurora connection configuration."
             )
+        if max_readiness_attempts < 1:
+            raise ValueError(
+                "max_readiness_attempts must be at least 1."
+            )
+        if readiness_backoff_seconds < 0:
+            raise ValueError(
+                "readiness_backoff_seconds must be non-negative."
+            )
 
         self._resource_arn = resource_arn
         self._secret_arn = secret_arn
         self._database = database
+        self._max_readiness_attempts = max_readiness_attempts
+        self._readiness_backoff_seconds = readiness_backoff_seconds
+        self._sleep = sleep
 
         self._client = client or boto3.client(
             "rds-data",
@@ -401,7 +423,7 @@ class AuroraDataAPIApprovalExecutionRepository(
             18,
         )
         if callback_delivered_at is None:
-            raise ValueError(
+            raise CallbackDeliveryNotCommittedError(
                 "Approval execution requires a delivered workflow callback."
             )
 
@@ -412,6 +434,64 @@ class AuroraDataAPIApprovalExecutionRepository(
             _optional_text(record, 21),
             _optional_text(record, 22),
         )
+
+    async def _acquire_ready_approval(
+        self,
+        *,
+        organization_id: UUID,
+        workflow_execution_id: UUID,
+    ) -> tuple[
+        str,
+        tuple[
+            DecidedApproval,
+            str,
+            str | None,
+            str | None,
+            str | None,
+        ],
+    ]:
+        """Acquire a locked decided approval once callback delivery has committed.
+
+        ``SendTaskSuccess`` can resume Step Functions before the callback worker's
+        ``mark_callback_delivered`` transaction finishes committing. Rolling back
+        the read transaction immediately releases the ``FOR UPDATE`` row lock so
+        the callback delivery transaction can commit during bounded readiness
+        polls, without ever marking delivery complete here or retrying any
+        approved side effect.
+        """
+        for attempt in range(1, self._max_readiness_attempts + 1):
+            transaction_id = await self._begin()
+            try:
+                await self._set_tenant(
+                    transaction_id=transaction_id,
+                    organization_id=organization_id,
+                )
+
+                loaded = await self._load_locked(
+                    transaction_id=transaction_id,
+                    organization_id=organization_id,
+                    workflow_execution_id=workflow_execution_id,
+                )
+                if loaded is None:
+                    raise ValueError(
+                        "No decided Approval exists for this workflow execution."
+                    )
+
+                return transaction_id, loaded
+            except CallbackDeliveryNotCommittedError:
+                await self._rollback(transaction_id)
+                if attempt >= self._max_readiness_attempts:
+                    raise
+                if self._readiness_backoff_seconds > 0:
+                    await self._sleep(self._readiness_backoff_seconds)
+            except Exception:
+                try:
+                    await self._rollback(transaction_id)
+                except UpstreamError:
+                    pass
+                raise
+
+        raise AssertionError("Unreachable readiness loop termination.")
 
     async def _mark_failed(
         self,
@@ -473,25 +553,13 @@ class AuroraDataAPIApprovalExecutionRepository(
         organization_id: UUID,
         workflow_execution_id: UUID,
     ) -> ActionExecutionResult:
-        transaction_id = await self._begin()
+        transaction_id, loaded = await self._acquire_ready_approval(
+            organization_id=organization_id,
+            workflow_execution_id=workflow_execution_id,
+        )
         committed = False
 
         try:
-            await self._set_tenant(
-                transaction_id=transaction_id,
-                organization_id=organization_id,
-            )
-
-            loaded = await self._load_locked(
-                transaction_id=transaction_id,
-                organization_id=organization_id,
-                workflow_execution_id=workflow_execution_id,
-            )
-            if loaded is None:
-                raise ValueError(
-                    "No decided Approval exists for this workflow execution."
-                )
-
             (
                 approval,
                 _callback_delivered_at,

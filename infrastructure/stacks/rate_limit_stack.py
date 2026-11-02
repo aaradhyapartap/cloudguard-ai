@@ -1,4 +1,4 @@
-"""Shared single-region API quota counters, separate from approval audit storage."""
+"""Single-region API/worker admission, separate from approval audit storage."""
 
 from __future__ import annotations
 
@@ -29,6 +29,21 @@ class RateLimitStack(cdk.Stack):
         cdk.CfnOutput(self, "RateLimitTableName", value=self.table.table_name)
         cdk.CfnOutput(self, "RateLimitTableArn", value=self.table.table_arn)
 
-    def grant_admission(self, grantee: iam.IGrantable) -> iam.Grant:
+    def grant_admission(self, grantee: iam.IGrantable) -> None:
         """The API needs only conditional updates, never scans/reads/audit access."""
-        return self.table.grant(grantee, "dynamodb:UpdateItem")
+        grantee.grant_principal.add_to_principal_policy(iam.PolicyStatement(
+            actions=["dynamodb:UpdateItem"], resources=[self.table.table_arn],
+            conditions={"ForAllValues:StringLike": {"dynamodb:LeadingKeys": ["api:v1:*"]}},
+        ))
+
+
+def grant_worker_admission(grantee: iam.IGrantable, *, table_arn: str) -> None:
+    """Separate worker-rate updates and owner-checked slot writes from API counters."""
+    for actions, prefix in (
+        (["dynamodb:UpdateItem"], "worker:v1:*"),
+        (["dynamodb:PutItem", "dynamodb:DeleteItem"], "slot:v1:*"),
+    ):
+        grantee.grant_principal.add_to_principal_policy(iam.PolicyStatement(
+            actions=actions, resources=[table_arn],
+            conditions={"ForAllValues:StringLike": {"dynamodb:LeadingKeys": [prefix]}},
+        ))

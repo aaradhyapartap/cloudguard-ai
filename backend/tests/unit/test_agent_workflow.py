@@ -5,6 +5,9 @@ from __future__ import annotations
 from uuid import UUID
 
 import pytest
+from app.adapters.local.rate_limit_store import InMemoryRateLimitStore
+from app.adapters.local.work_lease_store import InMemoryWorkLeaseStore
+from app.core.errors import AuthorizationError, RateLimitError, UpstreamError
 from app.models.agent_workflow import (
     AgentWorkflowRequest,
     AgentWorkflowResearchResult,
@@ -22,19 +25,28 @@ from app.models.risk_agent import (
     RiskAgentResult,
     RiskEvidenceEstimate,
 )
+from app.ports.work_lease_store import WorkLeaseStore
 from app.services.agent_workflow import AgentWorkflow
+from app.services.work_admission import WorkAdmission, WorkKind
 from pydantic import ValidationError
 
 EXECUTION_ID = UUID("00000000-0000-4000-8000-000000000010")
 
 
-def _principal() -> Principal:
+def _principal(*, role: Role = Role.ANALYST) -> Principal:
     return Principal(
         user_id=UUID("00000000-0000-4000-8000-000000000001"),
         organization_id=UUID("00000000-0000-4000-8000-000000000002"),
-        role=Role.ANALYST,
+        role=role,
         email="workflow@cloudguard.ai",
         department="Security",
+    )
+
+
+def _admission() -> WorkAdmission:
+    return WorkAdmission(
+        leases=InMemoryWorkLeaseStore(),
+        rates=InMemoryRateLimitStore(),
     )
 
 
@@ -132,6 +144,7 @@ async def test_workflow_executes_fixed_graph_in_order() -> None:
             decision=ReviewDecision.PASS,
         ),
         enabled=True,
+        admission=_admission(),
     )
 
     result = await workflow.run(
@@ -163,6 +176,7 @@ async def test_workflow_preserves_original_principal_across_all_steps() -> None:
         risk_agent=risk,
         reviewer_agent=reviewer,
         enabled=True,
+        admission=_admission(),
     )
 
     await workflow.run(
@@ -190,6 +204,7 @@ async def test_reviewer_fail_terminates_workflow_as_failed() -> None:
             decision=ReviewDecision.FAIL,
         ),
         enabled=True,
+        admission=_admission(),
     )
 
     result = await workflow.run(
@@ -218,6 +233,7 @@ async def test_disabled_workflow_blocks_all_agent_execution() -> None:
             decision=ReviewDecision.PASS,
         ),
         enabled=False,
+        admission=_admission(),
     )
 
     with pytest.raises(RuntimeError, match="Agentic workflows are disabled"):
@@ -244,6 +260,7 @@ async def test_workflow_preserves_execution_and_correlation_ids() -> None:
             decision=ReviewDecision.PASS,
         ),
         enabled=True,
+        admission=_admission(),
     )
 
     result = await workflow.run(
@@ -324,3 +341,154 @@ def test_workflow_research_projection_rejects_more_than_ten_evidence_items() -> 
 
     with pytest.raises(ValidationError):
         AgentWorkflowResearchResult.from_research_result(source)
+
+
+@pytest.mark.asyncio
+async def test_workflow_enforces_work_admission_when_configured() -> None:
+    calls: list[str] = []
+    leases = InMemoryWorkLeaseStore()
+    rates = InMemoryRateLimitStore()
+    admission = WorkAdmission(leases=leases, rates=rates)
+    principal = _principal()
+
+    workflow = AgentWorkflow(
+        research_agent=RecordingResearchAgent(calls),
+        risk_agent=RecordingRiskAgent(calls),
+        reviewer_agent=RecordingReviewerAgent(
+            calls,
+            decision=ReviewDecision.PASS,
+        ),
+        enabled=True,
+        admission=admission,
+    )
+
+    async with admission.admit(
+        organization_id=principal.organization_id,
+        kind=WorkKind.MODEL,
+    ), admission.admit(
+        organization_id=principal.organization_id,
+        kind=WorkKind.MODEL,
+    ):
+        with pytest.raises(RateLimitError):
+            await workflow.run(
+                principal=principal,
+                request=AgentWorkflowRequest(
+                    execution_id=EXECUTION_ID,
+                    correlation_id="corr-throttled",
+                    question="Review this workflow.",
+                ),
+            )
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_workflow_rejects_admin_before_admission_or_research() -> None:
+    calls: list[str] = []
+
+    class ExplodingLeaseStore(WorkLeaseStore):
+        async def try_acquire(
+            self, *, key: str, owner: str, now: int, expires_at: int
+        ) -> bool:
+            del key, owner, now, expires_at
+            raise AssertionError("Admin must be rejected before admission lease acquisition.")
+
+        async def release(self, *, key: str, owner: str) -> bool:
+            del key, owner
+            raise AssertionError("Admin must not release a slot.")
+
+    workflow = AgentWorkflow(
+        research_agent=RecordingResearchAgent(calls),
+        risk_agent=RecordingRiskAgent(calls),
+        reviewer_agent=RecordingReviewerAgent(
+            calls,
+            decision=ReviewDecision.PASS,
+        ),
+        enabled=True,
+        admission=WorkAdmission(
+            leases=ExplodingLeaseStore(),
+            rates=InMemoryRateLimitStore(),
+        ),
+    )
+
+    with pytest.raises(AuthorizationError):
+        await workflow.run(
+            principal=_principal(role=Role.ADMIN),
+            request=AgentWorkflowRequest(
+                execution_id=EXECUTION_ID,
+                correlation_id="corr-admin-denied",
+                question="Admin cannot trigger model workflows.",
+            ),
+        )
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", [Role.ANALYST, Role.MANAGER])
+async def test_workflow_allows_authorized_roles_with_required_admission(role: Role) -> None:
+    calls: list[str] = []
+    workflow = AgentWorkflow(
+        research_agent=RecordingResearchAgent(calls),
+        risk_agent=RecordingRiskAgent(calls),
+        reviewer_agent=RecordingReviewerAgent(
+            calls,
+            decision=ReviewDecision.PASS,
+        ),
+        enabled=True,
+        admission=_admission(),
+    )
+
+    result = await workflow.run(
+        principal=_principal(role=role),
+        request=AgentWorkflowRequest(
+            execution_id=EXECUTION_ID,
+            correlation_id=f"corr-{role.value}",
+            question="Authorized workflow execution.",
+        ),
+    )
+
+    assert result.status is AgentWorkflowStatus.SUCCEEDED
+    assert calls == ["Research", "Risk", "Reviewer"]
+
+
+@pytest.mark.asyncio
+async def test_workflow_fails_closed_when_admission_store_unavailable() -> None:
+    calls: list[str] = []
+
+    class OutageLeaseStore(WorkLeaseStore):
+        async def try_acquire(
+            self, *, key: str, owner: str, now: int, expires_at: int
+        ) -> bool:
+            del key, owner, now, expires_at
+            raise RuntimeError("lease store unavailable")
+
+        async def release(self, *, key: str, owner: str) -> bool:
+            del key, owner
+            return False
+
+    workflow = AgentWorkflow(
+        research_agent=RecordingResearchAgent(calls),
+        risk_agent=RecordingRiskAgent(calls),
+        reviewer_agent=RecordingReviewerAgent(
+            calls,
+            decision=ReviewDecision.PASS,
+        ),
+        enabled=True,
+        admission=WorkAdmission(
+            leases=OutageLeaseStore(),
+            rates=InMemoryRateLimitStore(),
+        ),
+    )
+
+    with pytest.raises(UpstreamError, match="Worker admission is temporarily unavailable"):
+        await workflow.run(
+            principal=_principal(role=Role.ANALYST),
+            request=AgentWorkflowRequest(
+                execution_id=EXECUTION_ID,
+                correlation_id="corr-outage",
+                question="Outage must fail closed.",
+            ),
+        )
+
+    assert calls == []

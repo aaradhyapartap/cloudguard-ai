@@ -8,18 +8,20 @@ from uuid import UUID
 
 from app.adapters.local.document_processing_repository import SQLAlchemyDocumentProcessingRepository
 from app.core.config import get_settings
-from app.core.container import build_container
+from app.core.container import build_container, build_work_admission
 from app.core.logging import configure_logging, get_logger
 from app.models.tenant import TenantScope
 from app.repositories.database import tenant_session
 from app.security.worker_errors import sanitize_worker_failures
 from app.services.document_processing import DocumentProcessingService
+from app.services.work_admission import WorkKind
 
 logger = get_logger(__name__)
 
 _settings = get_settings()
 configure_logging(_settings)
 _container = build_container(_settings)
+_admission = build_work_admission(_settings)
 
 
 async def _handle(event: dict[str, Any]) -> None:
@@ -40,7 +42,10 @@ async def _handle(event: dict[str, Any]) -> None:
 
     scope = TenantScope(organization_id=organization_id)
 
-    async with tenant_session(organization_id) as session:
+    async with (
+        _admission.admit(organization_id=organization_id, kind=WorkKind.INGESTION),
+        tenant_session(organization_id) as session,
+    ):
         repository = SQLAlchemyDocumentProcessingRepository(
             session=session,
             scope=scope,

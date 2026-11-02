@@ -107,5 +107,6 @@ asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 markers = [
     "integration: requires a live PostgreSQL instance (docker compose up postgres)",
+    "security: exercises Phase 8.5 security invariants and adversarial regression vectors",
 ]
 addopts = "-q --strict-markers"

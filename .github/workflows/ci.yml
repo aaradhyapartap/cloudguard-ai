@@ -38,7 +38,7 @@ jobs:
       - name: Lint
         run: cd backend && ruff check .
       - name: Type check
-        run: cd backend && mypy app
+        run: cd backend && mypy app tests/security
 
       # The POSTGRES_USER created by the service container is a privileged
       # database role. RLS must be tested through an ordinary application role,
@@ -82,15 +82,46 @@ jobs:
         env:
           DB_HOST: localhost
 
-      # Isolation tests run against real PostgreSQL because Row-Level Security
-      # does not exist in SQLite. They deliberately use the non-superuser role.
-      - name: Test
-        run: cd backend && pytest --cov=app --cov-report=term-missing
+      # Dedicated Phase 8.5 security regression gate. REQUIRE_SECURITY_DB_TESTS
+      # fails closed if PostgreSQL security regressions would otherwise skip.
+      - name: Security regressions
+        run: cd backend && pytest tests/security -ra
         env:
           DB_HOST: localhost
           DB_USER: cloudguard_app
           DB_PASSWORD: cloudguard_app
           RUN_DB_TESTS: '1'
+          REQUIRE_SECURITY_DB_TESTS: '1'
+
+      # Isolation tests run against real PostgreSQL because Row-Level Security
+      # does not exist in SQLite. They deliberately use the non-superuser role.
+      - name: Test
+        run: cd backend && pytest -ra --cov=app --cov-report=term-missing
+        env:
+          DB_HOST: localhost
+          DB_USER: cloudguard_app
+          DB_PASSWORD: cloudguard_app
+          RUN_DB_TESTS: '1'
+          REQUIRE_SECURITY_DB_TESTS: '1'
+
+  infrastructure:
+    name: Infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install
+        run: pip install -r infrastructure/requirements.txt pytest mypy
+      - name: Type check
+        run: cd infrastructure && mypy stacks
+      - name: Test
+        run: cd infrastructure && pytest -ra
 
   frontend:
     name: Frontend
@@ -105,6 +136,7 @@ jobs:
       - run: cd frontend && npm ci
       - run: cd frontend && npm run lint
       - run: cd frontend && npm run typecheck
+      - run: cd frontend && npm test
       - run: cd frontend && npm run build
 
   security:
@@ -113,14 +145,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }   # gitleaks needs history to scan it
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-      - name: Dependency audit (Python)
-        run: pip install pip-audit && pip-audit -r <(cd backend && pip install -e . --dry-run --quiet 2>/dev/null; echo) || true
       - name: Secret scan
         uses: gitleaks/gitleaks-action@v2
         env: { GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}' }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Dependency audit (Python backend & infrastructure)
+        run: |
+          python -m venv /tmp/audit-backend
+          /tmp/audit-backend/bin/pip install --upgrade pip pip-audit
+          /tmp/audit-backend/bin/pip install ./backend
+          /tmp/audit-backend/bin/pip-audit --desc
+          /tmp/audit-backend/bin/pip-audit -r infrastructure/requirements.txt --desc
       - uses: actions/setup-node@v4
-        with: { node-version: '22' }
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
       - name: Dependency audit (npm)
-        run: cd frontend && npm audit --audit-level=high || true
+        run: cd frontend && npm audit --audit-level=high
+      - name: Build backend container image
+        run: docker build -t cloudguard-backend:ci backend
+      - name: Container vulnerability scan
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          image-ref: 'cloudguard-backend:ci'
+          format: 'table'
+          exit-code: '1'
+          vuln-type: 'os,library'
+          scanners: 'vuln'
+          severity: 'CRITICAL,HIGH'
+          trivyignores: '.trivyignore.yaml'

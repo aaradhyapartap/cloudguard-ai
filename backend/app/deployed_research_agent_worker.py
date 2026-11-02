@@ -17,6 +17,7 @@ from app.security.worker_errors import sanitize_worker_failures
 from app.services.research_agent import ResearchAgent
 from app.services.retrieval import RetrievalService
 from app.services.tool_registry import ToolRegistry
+from app.services.work_admission import WorkKind
 
 
 class ResearchWorkflowTaskInput(BaseModel):
@@ -51,10 +52,13 @@ async def _handle(event: dict[str, Any]) -> dict[str, Any]:
         tool_registry=tool_registry,
     )
 
-    result = await agent.research(
-        principal=task_input.principal,
-        request=ResearchAgentRequest(query=task_input.question),
-    )
+    async with _container.admission.admit(
+        organization_id=task_input.principal.organization_id, kind=WorkKind.MODEL,
+    ):
+        result = await agent.research(
+            principal=task_input.principal,
+            request=ResearchAgentRequest(query=task_input.question),
+        )
     workflow_research = AgentWorkflowResearchResult.from_research_result(result)
 
     return {

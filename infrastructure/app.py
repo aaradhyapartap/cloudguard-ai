@@ -158,6 +158,8 @@ ingestion = IngestionStack(
     aurora_cluster_arn=aurora_cluster_arn,
     aurora_secret_arn=aurora_secret_arn,
     event_bus_name=event_bus_name,
+    admission_table_name=rate_limits.table.table_name,
+    admission_table_arn=rate_limits.table.table_arn,
     env=env,
     description="S3 document bucket, Step Functions ingestion workflow, and processing Lambda",
 )
@@ -172,6 +174,8 @@ agent_workflow = AgentWorkflowStack(
     reviewer_model_id=reviewer_model_id,
     embedding_model_id=embedding_model_id,
     agentic_workflows_enabled=agentic_workflows_enabled,
+    admission_table_name=rate_limits.table.table_name,
+    admission_table_arn=rate_limits.table.table_arn,
     env=env,
     description="Deterministic Phase 6 Research, Risk, and Reviewer agent workflow",
 )

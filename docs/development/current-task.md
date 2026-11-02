@@ -151,6 +151,33 @@ redaction decisions must remain auditable.
 
 ## Phase 8.4 - Rate limiting and abuse protection
 
+Slice 4 local validation passed on 2026-11-01; commit pending.
+
+- Full backend suite (including Phase 8.5 security regressions): 1223 passed, 92% coverage, including PostgreSQL integration and RLS tests.
+- Infrastructure suite: 47 passed.
+- Backend Ruff: clean. Backend mypy: clean across 147 source files (`app` + `tests/security`).
+- Infrastructure mypy: clean across 5 source files.
+- PostgreSQL revision: 0012. Published migrations unchanged.
+- Local `AgentWorkflow` requires `WorkAdmission` (`WorkKind.MODEL`) and enforces both `Permission.DOCUMENT_READ` and `Permission.AI_QUERY` before any model work (admitting one local workflow run rather than each deployed worker step).
+- Validation used local Python 3.14; Python 3.12 CI remains separately unverified.
+- No deployment, live AWS enforcement evaluation, or external IAM mutation was performed.
+
+Slice 4 summary:
+
+Shared per-tenant worker admission gates Research, Risk, Reviewer, and ingestion
+before costly work. Fixed-window quotas and owner-checked expiring slots use
+separate namespaces in the existing operational admission table. CDK supplies
+the table and narrowly scoped permissions to those four workers only. Local
+development uses bounded in-memory stores; non-local workers fail closed without
+the shared table. No migration, deployment, or external IAM mutation is performed.
+See `docs/security/WORKER_ADMISSION.md` for failure and rollout semantics.
+
+This bounds active worker steps, not queued workflow starts, pending approvals,
+API model concurrency, or provider-side work after a timeout. Workflow-start
+admission, edge/API wiring, native input-token budgets, parser isolation, and
+live enforcement verification remain outstanding. Human approval and the
+ingestion DLQ are unchanged. Python 3.12 CI remains separately unverified.
+
 Slice 3 local validation passed on 2026-11-01; commit pending.
 
 - Full backend suite: 1090 passed, 92% coverage, including PostgreSQL integration tests.
@@ -222,6 +249,15 @@ chunks, model tokens, retry counts, and concurrent cost-bearing work. Applicatio
 limits and edge/API Gateway/WAF limits are defense-in-depth, not substitutes.
 
 ## Phase 8.5 - Security regression and CI
+
+Local validation passed on 2026-11-01; commit pending.
+
+- Dedicated `backend/tests/security/` suite (`test_security_regressions.py`: 94 deterministic service/route/contract tests, `test_callback_race.py`: 6 mocked RDS Data API / callback-port race tests, `test_rls_security.py`: 7 real PostgreSQL `cloudguard_app` `NOBYPASSRLS` tests + 1 migration-file sequence check gated by `REQUIRE_SECURITY_DB_TESTS=1`): 108 passed.
+- `.github/workflows/ci.yml` updated with blocking `Security regressions` step (`REQUIRE_SECURITY_DB_TESTS=1`), dedicated `infrastructure` job (`mypy stacks` + `pytest -ra`), blocking `pip-audit` for `backend` and `infrastructure` (verified 0 vulnerabilities), blocking `npm audit --audit-level=high` (verified 0 high/critical vulnerabilities; 14 moderate dev-only `eslint`/`minimatch` advisories remain), executable frontend component tests (`npm test`), `gitleaks`, and `aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1` (`v0.35.0`) container image scanning without `ignore-unfixed: true` (using a component-scoped, time-bounded `.trivyignore.yaml` targeting `usr/local/bin/aws-lambda-rie`).
+- Special review items resolved in source:
+  - Callback synchronization race (`CG-14`): `AuroraDataAPIApprovalExecutionRepository.execute_for_workflow` uses bounded readiness polling (`CallbackDeliveryNotCommittedError`, 4 attempts, 50 ms backoff, rolling back the `FOR UPDATE` row lock between attempts and failing closed with a sanitized `UpstreamError` if rollback fails) and fails closed without side-effect execution when `callback_delivered_at` remains uncommitted.
+  - Historical migration `0005`: audited against `tables.py` and live PostgreSQL `pg_indexes` at revision `0012`; all 17 expected indexes/unique constraints are present and enforced by `test_migration_0005_expected_indexes_exist_in_postgresql`. Published migrations `0001`–`0012` are unchanged.
+  - Hosted login PKCE/state/nonce and lifecycle safety: `frontend/src/lib/auth.ts`, `AuthProvider.tsx`, `AuthProvider.test.tsx`, and `login/page.tsx` implement RFC 7636 PKCE (`S256`, 48-byte verifier), 24-byte `state` and `nonce`, single-use `sessionStorage` transaction records (`cloudguard.auth.pkce`), `/oauth2/token` code exchange, ID token claim verification (`token_use=id`, `iss`, `aud`, `nonce`, `exp`), callback URL scrubbing, and cancellation/logout lifecycle safety (`npm test` 6 passed, `npm run lint`, `npm run typecheck`, and `npm run build` pass). Static SPA `sessionStorage` XSS exposure and live Cognito Hosted UI runtime verification remain documented residual/deployment items.
 
 Deliver:
 
