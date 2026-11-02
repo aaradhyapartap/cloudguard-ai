@@ -1,0 +1,6 @@
+# Synthetic AWS Secrets Manager ARN placeholder in historical Phase 4 unit test commit 6d4b1187b67de9987e49683d47e08087b0268d73; not a real credential.
+6d4b1187b67de9987e49683d47e08087b0268d73:backend/tests/unit/test_vector_store.py:generic-api-key:166
+
+# Synthetic detector-test private-key header fixture in historical Phase 8 unit test commit 65f46ceb57b0a2441b71fd425a1079528a836428; not a real private key.
+65f46ceb57b0a2441b71fd425a1079528a836428:backend/tests/unit/test_sensitive_data.py:private-key:23
+

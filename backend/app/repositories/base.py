@@ -40,7 +40,7 @@ class TenantRepository[ModelT: Base]:
     def organization_id(self) -> UUID:
         return self._scope.organization_id
 
-    def _scoped(self) -> Select[tuple[ModelT]]:
+    def _scoped(self) -> Select[ModelT]:
         """A SELECT already filtered to this tenant.
 
         Repositories build from this, never from a bare ``select(Model)``.
