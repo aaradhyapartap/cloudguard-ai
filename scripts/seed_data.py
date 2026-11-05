@@ -29,6 +29,11 @@ from app.adapters.local.directory import (  # noqa: E402
     LOCAL_ORGANIZATIONS,
     LOCAL_USERS,
 )
+from app.adapters.local.evaluation_repository import (  # noqa: E402
+    SQLAlchemyEvaluationRepository,
+)
+from app.evaluations.harness import EvaluationHarness  # noqa: E402
+from app.models.evaluation import EvaluationExecutionMode  # noqa: E402
 from app.repositories.database import (  # noqa: E402
     dispose_engine,
     tenant_session,
@@ -36,7 +41,7 @@ from app.repositories.database import (  # noqa: E402
 )
 
 
-async def seed() -> None:
+async def seed(*, seed_evaluations: bool = True) -> None:
     # `organizations` carries no RLS policy — a tenant must be resolvable
     # before a tenant context can exist — so it writes without one.
     async with untenanted_session() as session:
@@ -74,6 +79,26 @@ async def seed() -> None:
                     },
                 )
 
+            if seed_evaluations:
+                repo = SQLAlchemyEvaluationRepository(session)
+                existing_runs = await repo.list_runs(
+                    organization_id=org.organization_id,
+                    limit=1,
+                )
+                if not existing_runs:
+                    manager_user = next(
+                        (u for u in members if u.role == "manager"),
+                        members[0],
+                    )
+                    harness = EvaluationHarness(
+                        execution_mode=EvaluationExecutionMode.DETERMINISTIC_FIXTURE
+                    )
+                    run_payload = await harness.run_suite(
+                        organization_id=org.organization_id,
+                        triggered_by=manager_user.user_id,
+                    )
+                    await repo.create_run(run_payload)
+
     await dispose_engine()
 
 
@@ -95,6 +120,6 @@ if __name__ == "__main__":
     asyncio.run(seed())
     print(
         f"Seeded {len(LOCAL_ORGANIZATIONS)} organizations "
-        f"and {len(LOCAL_USERS)} users."
+        f"and {len(LOCAL_USERS)} users (with baseline evaluation runs)."
     )
     print_login_help()

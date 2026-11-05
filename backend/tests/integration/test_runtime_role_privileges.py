@@ -27,6 +27,7 @@ EXPECTED: dict[str, tuple[bool, bool, bool, bool, bool, bool, bool]] = {
     "approvals": (True, True, True, False, False, False, False),
     "security_reviews": (True, True, False, False, False, False, False),
     "approval_audit_events": (True, False, False, False, False, False, False),
+    "evaluation_runs": (True, True, False, False, False, False, False),
 }
 
 

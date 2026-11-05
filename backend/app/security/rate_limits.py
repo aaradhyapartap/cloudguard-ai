@@ -34,6 +34,8 @@ COMPLIANCE_WRITE = RatePolicy("compliance-write", 30)
 EXTRACTION = RatePolicy("model-extraction", 10)
 APPROVAL_READ = RatePolicy("approval-read", 120)
 APPROVAL_DECIDE = RatePolicy("approval-decision", 30)
+EVALUATION_READ = RatePolicy("evaluation-read", 120)
+EVALUATION_RUN = RatePolicy("evaluation-run", 10)
 TENANT_MULTIPLIER = 5
 
 
@@ -60,6 +62,8 @@ def authenticated_policy(method: str, route: str) -> RatePolicy:
         return EXTRACTION if route.endswith("/candidates") else COMPLIANCE_WRITE
     if route.startswith("/approvals"):
         return APPROVAL_READ if method == "GET" else APPROVAL_DECIDE
+    if route.startswith("/evaluations"):
+        return EVALUATION_READ if method == "GET" else EVALUATION_RUN
     return GENERAL
 
 
