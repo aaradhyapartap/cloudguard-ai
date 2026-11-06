@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.ai import VectorMatch
+from app.models.telemetry import CostEstimate
 
 
 class RetrievalRequest(BaseModel):
@@ -61,3 +62,4 @@ class RetrievalResponse(BaseModel):
 
     matches: list[VectorMatch]
     total: int
+    cost: CostEstimate | None = None

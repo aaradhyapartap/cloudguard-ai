@@ -266,3 +266,137 @@ async def test_bedrock_chat_llm_valid_latency_metric_succeeds() -> None:
 def test_bedrock_chat_llm_requires_model_id() -> None:
     with pytest.raises(ValueError, match=r"Bedrock chat model ID is required\."):
         BedrockLLMProvider(chat_model_id="")
+
+
+@pytest.mark.asyncio
+async def test_bedrock_chat_llm_successful_response_with_usage_absent() -> None:
+    client = _MockBedrockClient(
+        canned_response={
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [{"text": "Response without usage."}],
+                }
+            },
+            "stopReason": "end_turn",
+        }
+    )
+    provider = BedrockLLMProvider(
+        chat_model_id="anthropic.claude-haiku-4-5-20251001-v1:0",
+        client=client,
+    )
+    req = GenerationRequest(messages=[Message(role="user", content="Test")])
+    response = await provider.generate(req)
+
+    assert response.content == "Response without usage."
+    assert response.usage is None
+
+
+@pytest.mark.asyncio
+async def test_bedrock_chat_llm_successful_response_with_one_token_count_absent() -> None:
+    # Input tokens present, output tokens absent
+    client1 = _MockBedrockClient(
+        canned_response={
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [{"text": "Response with partial usage."}],
+                }
+            },
+            "usage": {"inputTokens": 120},
+            "stopReason": "end_turn",
+        }
+    )
+    provider1 = BedrockLLMProvider(
+        chat_model_id="anthropic.claude-haiku-4-5-20251001-v1:0",
+        client=client1,
+    )
+    req = GenerationRequest(messages=[Message(role="user", content="Test")])
+    response1 = await provider1.generate(req)
+
+    assert response1.usage is not None
+    assert response1.usage.input_tokens == 120
+    assert response1.usage.output_tokens is None
+    assert response1.usage.is_complete is False
+    assert response1.usage.total_tokens is None
+
+    # Output tokens present, input tokens absent
+    client2 = _MockBedrockClient(
+        canned_response={
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [{"text": "Response with partial usage."}],
+                }
+            },
+            "usage": {"outputTokens": 45},
+            "stopReason": "end_turn",
+        }
+    )
+    provider2 = BedrockLLMProvider(
+        chat_model_id="anthropic.claude-haiku-4-5-20251001-v1:0",
+        client=client2,
+    )
+    response2 = await provider2.generate(req)
+
+    assert response2.usage is not None
+    assert response2.usage.input_tokens is None
+    assert response2.usage.output_tokens == 45
+    assert response2.usage.is_complete is False
+    assert response2.usage.total_tokens is None
+
+
+@pytest.mark.asyncio
+async def test_bedrock_chat_llm_successful_response_with_explicit_zero_counts() -> None:
+    client = _MockBedrockClient(
+        canned_response={
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [{"text": "Response with zero usage."}],
+                }
+            },
+            "usage": {"inputTokens": 0, "outputTokens": 0},
+            "stopReason": "end_turn",
+        }
+    )
+    provider = BedrockLLMProvider(
+        chat_model_id="anthropic.claude-haiku-4-5-20251001-v1:0",
+        client=client,
+    )
+    req = GenerationRequest(messages=[Message(role="user", content="Test")])
+    response = await provider.generate(req)
+
+    assert response.usage is not None
+    assert response.usage.input_tokens == 0
+    assert response.usage.output_tokens == 0
+    assert response.usage.is_complete is True
+    assert response.usage.total_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_bedrock_chat_llm_successful_response_with_complete_counts() -> None:
+    client = _MockBedrockClient(
+        canned_response={
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [{"text": "Response with complete usage."}],
+                }
+            },
+            "usage": {"inputTokens": 200, "outputTokens": 80},
+            "stopReason": "end_turn",
+        }
+    )
+    provider = BedrockLLMProvider(
+        chat_model_id="anthropic.claude-haiku-4-5-20251001-v1:0",
+        client=client,
+    )
+    req = GenerationRequest(messages=[Message(role="user", content="Test")])
+    response = await provider.generate(req)
+
+    assert response.usage is not None
+    assert response.usage.input_tokens == 200
+    assert response.usage.output_tokens == 80
+    assert response.usage.is_complete is True
+    assert response.usage.total_tokens == 280

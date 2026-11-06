@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from pydantic import ValidationError as PydanticValidationError
 
@@ -16,12 +17,14 @@ from app.models.reviewer_agent import (
     ReviewerModelOutput,
 )
 from app.ports.llm_provider import LLMProvider
+from app.ports.telemetry import TelemetryEmitter
 from app.security.model_output import require_model_response_allowed
 from app.security.prompt_isolation import (
     UntrustedPromptSection,
     build_isolated_user_prompt,
     build_system_prompt,
 )
+from app.telemetry.isolation import safe_telemetry_call
 
 _SYSTEM_PROMPT = build_system_prompt(
     """You are the CloudGuard AI Reviewer Agent.
@@ -51,12 +54,14 @@ class ReviewerAgent:
         *,
         llm_provider: LLMProvider,
         max_context_chars: int = 30_000,
+        telemetry: TelemetryEmitter | None = None,
     ) -> None:
         if max_context_chars < 100:
             raise ValueError("max_context_chars must be at least 100.")
 
         self._llm_provider = llm_provider
         self._max_context_chars = max_context_chars
+        self._telemetry = telemetry
 
     async def review(
         self,
@@ -198,8 +203,37 @@ class ReviewerAgent:
             response_schema=ReviewerModelOutput.model_json_schema(),
         )
 
+        start_time = time.perf_counter()
         try:
             generation_response = await self._llm_provider.generate(generation_request)
+        except UpstreamError:
+            raise
+        except Exception as exc:
+            raise UpstreamError("The reviewer agent generation failed.") from exc
+        finally:
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+
+        if self._telemetry is not None:
+            safe_telemetry_call(
+                self._telemetry.record_latency,
+                "model_call",
+                elapsed_ms,
+                dimensions={
+                    "Operation": "reviewer_agent",
+                    "ModelId": generation_response.model_id,
+                },
+            )
+            r_in = generation_response.usage.input_tokens if generation_response.usage else None
+            r_out = generation_response.usage.output_tokens if generation_response.usage else None
+            safe_telemetry_call(
+                self._telemetry.record_token_usage,
+                model_id=generation_response.model_id,
+                input_tokens=r_in,
+                output_tokens=r_out,
+                operation="reviewer_agent",
+            )
+
+        try:
             require_model_response_allowed(generation_response)
         except UpstreamError:
             raise

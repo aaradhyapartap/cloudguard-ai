@@ -16,6 +16,7 @@ def _service(container: ContainerDep) -> RetrievalService:
     return RetrievalService(
         embedding_provider=container.embeddings,
         vector_store=container.vectors,
+        telemetry=container.telemetry,
     )
 
 

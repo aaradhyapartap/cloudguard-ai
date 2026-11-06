@@ -212,12 +212,16 @@ class ComplianceAgent:
                 planning_model_id=planning_response.model_id,
                 evaluation_model_id=planning_response.model_id,
                 planning_usage=planning_response.usage,
-                evaluation_usage=planning_response.usage.model_copy(
-                    update={
-                        "input_tokens": 0,
-                        "output_tokens": 0,
-                        "cached_input_tokens": 0,
-                    }
+                evaluation_usage=(
+                    planning_response.usage.model_copy(
+                        update={
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "cached_input_tokens": 0,
+                        }
+                    )
+                    if planning_response.usage is not None
+                    else None
                 ),
             )
 

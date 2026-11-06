@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from pydantic import ValidationError as PydanticValidationError
 
@@ -17,9 +18,11 @@ from app.models.research_agent import (
 )
 from app.models.retrieval import RetrievalResponse
 from app.ports.llm_provider import LLMProvider
+from app.ports.telemetry import TelemetryEmitter
 from app.security.model_output import require_model_response_allowed
 from app.security.prompt_isolation import build_isolated_user_prompt, build_system_prompt
 from app.services.tool_registry import ToolExecutionBudget, ToolRegistry
+from app.telemetry.isolation import safe_telemetry_call
 
 _SYSTEM_PROMPT = build_system_prompt(
     """You are the CloudGuard AI Research Agent.
@@ -44,6 +47,7 @@ class ResearchAgent:
         llm_provider: LLMProvider,
         tool_registry: ToolRegistry,
         max_tool_calls: int = 1,
+        telemetry: TelemetryEmitter | None = None,
     ) -> None:
         if max_tool_calls < 1:
             raise ValueError("max_tool_calls must be at least 1.")
@@ -51,6 +55,7 @@ class ResearchAgent:
         self._llm_provider = llm_provider
         self._tool_registry = tool_registry
         self._max_tool_calls = max_tool_calls
+        self._telemetry = telemetry
 
     async def research(
         self,
@@ -83,8 +88,37 @@ class ResearchAgent:
             response_schema=response_schema,
         )
 
+        start_time = time.perf_counter()
         try:
             generation_response = await self._llm_provider.generate(generation_request)
+        except UpstreamError:
+            raise
+        except Exception as exc:
+            raise UpstreamError("The research agent generation failed.") from exc
+        finally:
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+
+        if self._telemetry is not None:
+            safe_telemetry_call(
+                self._telemetry.record_latency,
+                "model_call",
+                elapsed_ms,
+                dimensions={
+                    "Operation": "research_agent",
+                    "ModelId": generation_response.model_id,
+                },
+            )
+            r_in = generation_response.usage.input_tokens if generation_response.usage else None
+            r_out = generation_response.usage.output_tokens if generation_response.usage else None
+            safe_telemetry_call(
+                self._telemetry.record_token_usage,
+                model_id=generation_response.model_id,
+                input_tokens=r_in,
+                output_tokens=r_out,
+                operation="research_agent",
+            )
+
+        try:
             require_model_response_allowed(generation_response)
         except UpstreamError:
             raise

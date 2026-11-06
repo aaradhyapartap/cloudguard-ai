@@ -10,9 +10,12 @@ from uuid import UUID, uuid4
 
 from app.core.errors import RateLimitError, UpstreamError
 from app.core.logging import get_logger
+from app.models.telemetry import AdmissionCategory
 from app.ports.rate_limit_store import RateLimitStore
+from app.ports.telemetry import TelemetryEmitter
 from app.ports.work_lease_store import WorkLeaseStore
 from app.security.rate_limits import RatePolicy, enforce_rate_limit
+from app.telemetry.isolation import safe_telemetry_call
 
 logger = get_logger(__name__)
 LEASE_SECONDS = 600  # Exceeds both the 120s model and 300s ingestion Lambda runtimes.
@@ -25,12 +28,17 @@ class WorkKind(StrEnum):
 
 class WorkAdmission:
     def __init__(
-        self, *, leases: WorkLeaseStore, rates: RateLimitStore,
+        self,
+        *,
+        leases: WorkLeaseStore,
+        rates: RateLimitStore,
         clock: Callable[[], float] = time.time,
+        telemetry: TelemetryEmitter | None = None,
     ) -> None:
         self._leases = leases
         self._rates = rates
         self._clock = clock
+        self._telemetry = telemetry
 
     @asynccontextmanager
     async def admit(self, *, organization_id: UUID, kind: WorkKind) -> AsyncIterator[None]:
@@ -51,6 +59,13 @@ class WorkAdmission:
         except Exception as exc:
             raise UpstreamError("Worker admission is temporarily unavailable.") from exc
         if acquired is None:
+            if self._telemetry is not None:
+                safe_telemetry_call(
+                    self._telemetry.record_admission_decision,
+                    category=AdmissionCategory.WORKER_ADMISSION,
+                    decision="denied",
+                    reason="slot_exhausted",
+                )
             raise RateLimitError(retry_after_seconds=60)
 
         try:
@@ -58,16 +73,32 @@ class WorkAdmission:
                 self._rates, policy=policy, subject=("tenant-work", str(organization_id)),
                 namespace="worker", clock=self._clock,
             )
-            yield
-        finally:
-            try:
-                released = await self._leases.release(key=acquired, owner=owner)
-                if not released:
-                    logger.warning("worker_slot_release_stale", work_kind=kind.value)
-            except Exception as exc:
-                # Work may already have succeeded. Do not convert a cleanup
-                # outage into a replay trigger; expiry recovers capacity later.
-                logger.warning(
-                    "worker_slot_cleanup_failed", work_kind=kind.value,
-                    error_type=type(exc).__name__,
+            if self._telemetry is not None:
+                safe_telemetry_call(
+                    self._telemetry.record_admission_decision,
+                    category=AdmissionCategory.WORKER_ADMISSION,
+                    decision="allowed",
                 )
+            yield
+        except RateLimitError:
+            if self._telemetry is not None:
+                safe_telemetry_call(
+                    self._telemetry.record_admission_decision,
+                    category=AdmissionCategory.WORKER_ADMISSION,
+                    decision="denied",
+                    reason="rate_limit_exceeded",
+                )
+            raise
+        finally:
+            if acquired is not None:
+                try:
+                    released = await self._leases.release(key=acquired, owner=owner)
+                    if not released:
+                        logger.warning("worker_slot_release_stale", work_kind=kind.value)
+                except Exception as exc:
+                    # Work may already have succeeded. Do not convert a cleanup
+                    # outage into a replay trigger; expiry recovers capacity later.
+                    logger.warning(
+                        "worker_slot_cleanup_failed", work_kind=kind.value,
+                        error_type=type(exc).__name__,
+                    )

@@ -19,6 +19,7 @@ from app.models.ai import (
     TokenUsage,
 )
 from app.ports.llm_provider import LLMProvider
+from app.ports.telemetry import TelemetryEmitter
 from app.security.model_budgets import (
     MAX_GENERATION_INPUT_BYTES,
     MAX_GENERATION_OUTPUT_BYTES,
@@ -28,6 +29,7 @@ from app.security.model_budgets import (
     require_text_budget,
 )
 from app.security.model_output import require_model_response_allowed
+from app.telemetry.isolation import safe_telemetry_call
 
 logger = get_logger(__name__)
 
@@ -46,6 +48,7 @@ class BedrockLLMProvider(LLMProvider):
         max_output_tokens: int = 2048,
         max_input_bytes: int = MAX_GENERATION_INPUT_BYTES,
         client: Any | None = None,
+        telemetry: TelemetryEmitter | None = None,
     ) -> None:
         if not chat_model_id:
             raise ValueError("Bedrock chat model ID is required.")
@@ -67,6 +70,7 @@ class BedrockLLMProvider(LLMProvider):
         self._guardrail_version = guardrail_version
         self._max_output_tokens = max_output_tokens
         self._max_input_bytes = max_input_bytes
+        self._telemetry = telemetry
 
         if client is not None:
             self._client = client
@@ -135,6 +139,29 @@ class BedrockLLMProvider(LLMProvider):
                 partial(self._client.converse, **kwargs)
             )
         except Exception as exc:
+            end_time = datetime.now(UTC)
+            latency_ms = max(1, int((end_time - start_time).total_seconds() * 1000))
+            if self._telemetry is not None:
+                safe_telemetry_call(
+                    self._telemetry.record_latency,
+                    "bedrock_converse",
+                    float(latency_ms),
+                    dimensions={
+                        "Operation": "bedrock_converse",
+                        "Status": "error",
+                        "ModelId": self._chat_model_id,
+                    },
+                )
+                safe_telemetry_call(
+                    self._telemetry.record_counter,
+                    "BedrockErrors",
+                    1.0,
+                    dimensions={
+                        "Operation": "bedrock_converse",
+                        "Status": "error",
+                        "ModelId": self._chat_model_id,
+                    },
+                )
             # Safe structured error logging: do not log prompt text, messages, or raw exc string.
             logger.error(
                 "bedrock_converse_call_failed",
@@ -148,112 +175,104 @@ class BedrockLLMProvider(LLMProvider):
 
         # Strict response payload validation: fail closed on malformed structures
         if not isinstance(response, dict):
+            if self._telemetry is not None:
+                safe_telemetry_call(
+                    self._telemetry.record_counter,
+                    "BedrockErrors",
+                    1.0,
+                    dimensions={
+                        "Operation": "bedrock_converse",
+                        "Status": "error",
+                        "ModelId": self._chat_model_id,
+                    },
+                )
             logger.error(
                 "bedrock_converse_invalid_response_type",
                 model_id=self._chat_model_id,
             )
             raise UpstreamError("The model generation request failed.")
 
-        stop_reason = str(response.get("stopReason") or "end_turn").strip().lower()
-        raw_guardrail_action = response.get("guardrailAction")
-        if raw_guardrail_action is not None and not isinstance(
-            raw_guardrail_action, str
-        ):
-            logger.error(
-                "bedrock_converse_invalid_guardrail_action",
-                model_id=self._chat_model_id,
-            )
-            raise UpstreamError("The model generation request failed.")
+        def _record_failure_telemetry(error_counter_name: str = "BedrockErrors") -> None:
+            if self._telemetry is not None:
+                if extracted_usage is not None and (
+                    extracted_usage.input_tokens is not None
+                    or extracted_usage.output_tokens is not None
+                ):
+                    safe_telemetry_call(
+                        self._telemetry.record_token_usage,
+                        model_id=self._chat_model_id,
+                        input_tokens=extracted_usage.input_tokens,
+                        output_tokens=extracted_usage.output_tokens,
+                        operation="bedrock_converse",
+                    )
+                safe_telemetry_call(
+                    self._telemetry.record_latency,
+                    "bedrock_converse",
+                    float(latency_ms),
+                    dimensions={
+                        "Operation": "bedrock_converse",
+                        "Status": "error",
+                        "ModelId": self._chat_model_id,
+                    },
+                )
+                safe_telemetry_call(
+                    self._telemetry.record_counter,
+                    error_counter_name,
+                    1.0,
+                    dimensions={
+                        "Operation": "bedrock_converse",
+                        "Status": "error",
+                        "ModelId": self._chat_model_id,
+                    },
+                )
 
-        guardrail_action = raw_guardrail_action or None
-        if stop_reason == "guardrail_intervened" or (
-            guardrail_action is not None
-            and guardrail_action.strip().lower() not in {"", "none", "no_action"}
-        ):
-            logger.warning(
-                "bedrock_guardrail_intervened",
-                model_id=self._chat_model_id,
-            )
-            raise UpstreamError(
-                "The model generation request was blocked by safety controls."
-            )
-
-        output = response.get("output")
-        if not isinstance(output, dict):
-            logger.error(
-                "bedrock_converse_missing_output",
-                model_id=self._chat_model_id,
-            )
-            raise UpstreamError("The model generation request failed.")
-
-        message_data = output.get("message")
-        if not isinstance(message_data, dict):
-            logger.error(
-                "bedrock_converse_missing_message",
-                model_id=self._chat_model_id,
-            )
-            raise UpstreamError("The model generation request failed.")
-
-        content_blocks = message_data.get("content")
-        if not isinstance(content_blocks, list):
-            logger.error(
-                "bedrock_converse_missing_content_blocks",
-                model_id=self._chat_model_id,
-            )
-            raise UpstreamError("The model generation request failed.")
-
-        content_parts: list[str] = []
-        remaining_bytes = MAX_GENERATION_OUTPUT_BYTES
-        for block in content_blocks:
-            if not isinstance(block, dict):
+        # Extract available token usage and latency immediately at the response boundary
+        # before guardrail, output, or safety validation. Unknown usage stays unknown.
+        extracted_usage: TokenUsage | None = None
+        usage_data = response.get("usage")
+        if usage_data is not None:
+            if not isinstance(usage_data, dict):
+                _record_failure_telemetry("BedrockErrors")
                 logger.error(
-                    "bedrock_converse_invalid_block_type",
+                    "bedrock_converse_invalid_usage_type",
                     model_id=self._chat_model_id,
                 )
                 raise UpstreamError("The model generation request failed.")
-            if "text" in block:
-                text_val = block["text"]
-                if not isinstance(text_val, str):
+
+            parsed_in: int | None = None
+            parsed_out: int | None = None
+            if "inputTokens" in usage_data and usage_data["inputTokens"] is not None:
+                val_in = usage_data["inputTokens"]
+                if not isinstance(val_in, int) or isinstance(val_in, bool) or val_in < 0:
+                    _record_failure_telemetry("BedrockErrors")
                     logger.error(
-                        "bedrock_converse_invalid_text_type",
+                        "bedrock_converse_invalid_token_counts",
                         model_id=self._chat_model_id,
                     )
                     raise UpstreamError("The model generation request failed.")
-                try:
-                    remaining_bytes -= require_text_budget(text_val, max_bytes=remaining_bytes)
-                except ModelBudgetError as exc:
-                    raise UpstreamError("The model response exceeds the resource budget.") from exc
-                content_parts.append(text_val)
+                parsed_in = val_in
 
-        content_text = "".join(content_parts)
-        if not content_parts or not content_text.strip():
-            logger.error(
-                "bedrock_converse_empty_text_content",
-                model_id=self._chat_model_id,
-            )
-            raise UpstreamError("The model generation request failed.")
+            if "outputTokens" in usage_data and usage_data["outputTokens"] is not None:
+                val_out = usage_data["outputTokens"]
+                if not isinstance(val_out, int) or isinstance(val_out, bool) or val_out < 0:
+                    _record_failure_telemetry("BedrockErrors")
+                    logger.error(
+                        "bedrock_converse_invalid_token_counts",
+                        model_id=self._chat_model_id,
+                    )
+                    raise UpstreamError("The model generation request failed.")
+                parsed_out = val_out
 
-        usage_data = response.get("usage", {})
-        if not isinstance(usage_data, dict):
-            logger.error(
-                "bedrock_converse_invalid_usage_type",
-                model_id=self._chat_model_id,
-            )
-            raise UpstreamError("The model generation request failed.")
-
-        try:
-            input_tokens = int(usage_data.get("inputTokens", 0) or 0)
-            output_tokens = int(usage_data.get("outputTokens", 0) or 0)
-        except (ValueError, TypeError) as exc:
-            logger.error(
-                "bedrock_converse_invalid_token_counts",
-                model_id=self._chat_model_id,
-            )
-            raise UpstreamError("The model generation request failed.") from exc
+            if parsed_in is not None or parsed_out is not None:
+                extracted_usage = TokenUsage(
+                    input_tokens=parsed_in,
+                    output_tokens=parsed_out,
+                )
 
         metrics = response.get("metrics")
         if metrics is not None:
             if not isinstance(metrics, dict):
+                _record_failure_telemetry("BedrockErrors")
                 logger.error(
                     "bedrock_converse_invalid_metrics_type",
                     model_id=self._chat_model_id,
@@ -267,23 +286,113 @@ class BedrockLLMProvider(LLMProvider):
                         raise ValueError("Negative latency value")
                     latency_ms = parsed_latency
                 except (ValueError, TypeError) as exc:
+                    _record_failure_telemetry("BedrockErrors")
                     logger.error(
                         "bedrock_converse_invalid_latency_metric",
                         model_id=self._chat_model_id,
                     )
                     raise UpstreamError("The model generation request failed.") from exc
 
+        stop_reason = str(response.get("stopReason") or "end_turn").strip().lower()
+        raw_guardrail_action = response.get("guardrailAction")
+        if raw_guardrail_action is not None and not isinstance(
+            raw_guardrail_action, str
+        ):
+            _record_failure_telemetry("BedrockErrors")
+            logger.error(
+                "bedrock_converse_invalid_guardrail_action",
+                model_id=self._chat_model_id,
+            )
+            raise UpstreamError("The model generation request failed.")
+
+        guardrail_action = raw_guardrail_action or None
+        if stop_reason == "guardrail_intervened" or (
+            guardrail_action is not None
+            and guardrail_action.strip().lower() not in {"", "none", "no_action"}
+        ):
+            _record_failure_telemetry("BedrockGuardrailInterventions")
+            logger.warning(
+                "bedrock_guardrail_intervened",
+                model_id=self._chat_model_id,
+            )
+            raise UpstreamError(
+                "The model generation request was blocked by safety controls."
+            )
+
+        output = response.get("output")
+        if not isinstance(output, dict):
+            _record_failure_telemetry("BedrockErrors")
+            logger.error(
+                "bedrock_converse_missing_output",
+                model_id=self._chat_model_id,
+            )
+            raise UpstreamError("The model generation request failed.")
+
+        message_data = output.get("message")
+        if not isinstance(message_data, dict):
+            _record_failure_telemetry("BedrockErrors")
+            logger.error(
+                "bedrock_converse_missing_message",
+                model_id=self._chat_model_id,
+            )
+            raise UpstreamError("The model generation request failed.")
+
+        content_blocks = message_data.get("content")
+        if not isinstance(content_blocks, list):
+            _record_failure_telemetry("BedrockErrors")
+            logger.error(
+                "bedrock_converse_missing_content_blocks",
+                model_id=self._chat_model_id,
+            )
+            raise UpstreamError("The model generation request failed.")
+
+        content_parts: list[str] = []
+        remaining_bytes = MAX_GENERATION_OUTPUT_BYTES
+        for block in content_blocks:
+            if not isinstance(block, dict):
+                _record_failure_telemetry("BedrockErrors")
+                logger.error(
+                    "bedrock_converse_invalid_block_type",
+                    model_id=self._chat_model_id,
+                )
+                raise UpstreamError("The model generation request failed.")
+            if "text" in block:
+                text_val = block["text"]
+                if not isinstance(text_val, str):
+                    _record_failure_telemetry("BedrockErrors")
+                    logger.error(
+                        "bedrock_converse_invalid_text_type",
+                        model_id=self._chat_model_id,
+                    )
+                    raise UpstreamError("The model generation request failed.")
+                try:
+                    remaining_bytes -= require_text_budget(text_val, max_bytes=remaining_bytes)
+                except ModelBudgetError as exc:
+                    _record_failure_telemetry("BedrockErrors")
+                    raise UpstreamError("The model response exceeds the resource budget.") from exc
+                content_parts.append(text_val)
+
+        content_text = "".join(content_parts)
+        if not content_parts or not content_text.strip():
+            _record_failure_telemetry("BedrockErrors")
+            logger.error(
+                "bedrock_converse_empty_text_content",
+                model_id=self._chat_model_id,
+            )
+            raise UpstreamError("The model generation request failed.")
+
         result = GenerationResponse(
             content=content_text,
             model_id=self._chat_model_id,
-            usage=TokenUsage(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-            ),
+            usage=extracted_usage,
             stop_reason=stop_reason,
             latency_ms=latency_ms,
             guardrail_action=guardrail_action,
             generated_at=end_time,
         )
-        require_model_response_allowed(result)
+        try:
+            require_model_response_allowed(result)
+        except Exception:
+            _record_failure_telemetry("BedrockErrors")
+            raise
         return result

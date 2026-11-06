@@ -17,10 +17,12 @@ def _service(container: ContainerDep) -> RAGService:
     retrieval_service = RetrievalService(
         embedding_provider=container.embeddings,
         vector_store=container.vectors,
+        telemetry=container.telemetry,
     )
     return RAGService(
         retrieval_service=retrieval_service,
         llm_provider=container.llm,
+        telemetry=container.telemetry,
     )
 
 

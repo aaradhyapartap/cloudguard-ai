@@ -45,11 +45,13 @@ async def _handle(event: dict[str, Any]) -> dict[str, Any]:
     retrieval_service = RetrievalService(
         embedding_provider=_container.embeddings,
         vector_store=_container.vectors,
+        telemetry=_container.telemetry,
     )
     tool_registry = ToolRegistry(retrieval_service=retrieval_service)
     agent = ResearchAgent(
         llm_provider=_container.llm,
         tool_registry=tool_registry,
+        telemetry=_container.telemetry,
     )
 
     async with _container.admission.admit(

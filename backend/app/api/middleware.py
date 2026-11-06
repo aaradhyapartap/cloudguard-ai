@@ -9,11 +9,22 @@ from fastapi import FastAPI, Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.logging import bind_request_context, get_logger
+from app.telemetry.isolation import safe_telemetry_call
 from app.utilities.ids import resolve_request_id
 
 logger = get_logger(__name__)
 
 RequestHandler = Callable[[Request], Awaitable[Response]]
+
+_ALLOWED_HTTP_METHODS: frozenset[str] = frozenset(
+    {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
+)
+
+
+def _normalize_http_method(method: str) -> str:
+    """Map unknown/arbitrary HTTP methods to safe bounded category."""
+    upper = method.strip().upper() if method else "OTHER"
+    return upper if upper in _ALLOWED_HTTP_METHODS else "OTHER"
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
@@ -41,10 +52,48 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                 error_type=type(exc).__name__,
                 duration_ms=duration_ms,
             )
+            container = getattr(request.app.state, "container", None)
+            if container is not None and getattr(container, "telemetry", None) is not None:
+                op_method = _normalize_http_method(request.method)
+                safe_telemetry_call(
+                    container.telemetry.record_counter,
+                    "HttpRequestErrors",
+                    1.0,
+                    dimensions={"Operation": op_method, "Status": "500"},
+                    correlation_id=request_id,
+                )
             raise
 
         duration_ms = int((time.perf_counter() - started) * 1000)
         response.headers["x-request-id"] = request_id
+
+        container = getattr(request.app.state, "container", None)
+        if container is not None and getattr(container, "telemetry", None) is not None:
+            op_method = _normalize_http_method(request.method)
+            status_str = str(response.status_code)
+            safe_telemetry_call(
+                container.telemetry.record_latency,
+                "http_request",
+                float(duration_ms),
+                dimensions={"Operation": op_method, "Status": status_str},
+                correlation_id=request_id,
+            )
+            safe_telemetry_call(
+                container.telemetry.record_counter,
+                "HttpRequestCount",
+                1.0,
+                dimensions={"Operation": op_method, "Status": status_str},
+                correlation_id=request_id,
+            )
+            if response.status_code >= 500:
+                safe_telemetry_call(
+                    container.telemetry.record_counter,
+                    "HttpRequestErrors",
+                    1.0,
+                    dimensions={"Operation": op_method, "Status": status_str},
+                    correlation_id=request_id,
+                )
+
         logger.info(
             "request_completed",
             method=request.method,

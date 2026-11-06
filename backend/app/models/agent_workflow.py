@@ -33,7 +33,7 @@ class AgentWorkflowResearchResult(BaseModel):
     retrieval_count: int = Field(ge=0, le=10)
     tool_calls_used: int = Field(ge=0)
     model_id: str = Field(min_length=1, max_length=256)
-    usage: TokenUsage
+    usage: TokenUsage | None = None
 
     @classmethod
     def from_research_result(

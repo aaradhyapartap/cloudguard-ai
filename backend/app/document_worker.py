@@ -21,7 +21,7 @@ logger = get_logger(__name__)
 _settings = get_settings()
 configure_logging(_settings)
 _container = build_container(_settings)
-_admission = build_work_admission(_settings)
+_admission = build_work_admission(_settings, telemetry=_container.telemetry)
 
 
 async def _handle(event: dict[str, Any]) -> None:
@@ -57,6 +57,7 @@ async def _handle(event: dict[str, Any]) -> None:
             event_publisher=_container.events,
             vector_store=_container.vectors,
             embedding_provider=_container.embeddings,
+            telemetry=_container.telemetry,
         )
         await service.process_document(document_id)
 

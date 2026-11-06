@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from app.adapters.cognito.identity import CognitoIdentityProvider
 from app.adapters.local.identity import LocalIdentityProvider
 from app.adapters.local.rate_limit_store import InMemoryRateLimitStore
+from app.adapters.local.telemetry import InMemoryTelemetryEmitter
 from app.adapters.local.work_lease_store import InMemoryWorkLeaseStore
 from app.adapters.mock.document_store import InMemoryDocumentStore
 from app.adapters.mock.embedding import MockEmbeddingProvider
@@ -44,6 +45,7 @@ from app.ports.event_publisher import EventPublisher
 from app.ports.identity_provider import IdentityProvider
 from app.ports.llm_provider import EmbeddingProvider, LLMProvider
 from app.ports.rate_limit_store import RateLimitStore
+from app.ports.telemetry import TelemetryEmitter
 from app.ports.vector_store import VectorStore
 from app.services.work_admission import WorkAdmission
 
@@ -73,6 +75,7 @@ class Container:
     documents: DocumentStore
     events: EventPublisher
     rate_limits: RateLimitStore
+    telemetry: TelemetryEmitter
 
 
 def _build_identity(settings: Settings) -> IdentityProvider:
@@ -115,7 +118,10 @@ def _build_embeddings(
             )
 
 
-def _build_llm(settings: Settings | AgentWorkerSettings) -> LLMProvider:
+def _build_llm(
+    settings: Settings | AgentWorkerSettings,
+    telemetry: TelemetryEmitter | None = None,
+) -> LLMProvider:
     match settings.llm_provider:
         case "mock":
             return MockLLMProvider()
@@ -132,10 +138,14 @@ def _build_llm(settings: Settings | AgentWorkerSettings) -> LLMProvider:
                 guardrail_version=settings.bedrock.guardrail_version,
                 max_output_tokens=settings.bedrock.max_output_tokens,
                 max_input_bytes=settings.bedrock.max_input_bytes,
+                telemetry=telemetry,
             )
 
 
-def _build_reviewer_llm(settings: Settings | AgentWorkerSettings) -> LLMProvider:
+def _build_reviewer_llm(
+    settings: Settings | AgentWorkerSettings,
+    telemetry: TelemetryEmitter | None = None,
+) -> LLMProvider:
     """Build the independently configured Reviewer/Judge model provider."""
     match settings.llm_provider:
         case "mock":
@@ -153,6 +163,7 @@ def _build_reviewer_llm(settings: Settings | AgentWorkerSettings) -> LLMProvider
                 guardrail_version=settings.bedrock.guardrail_version,
                 max_output_tokens=settings.bedrock.max_output_tokens,
                 max_input_bytes=settings.bedrock.max_input_bytes,
+                telemetry=telemetry,
             )
 
 
@@ -230,12 +241,24 @@ def _build_rate_limit_store(
     )
 
 
+def _build_telemetry(
+    settings: Settings | WorkerSettings | AgentWorkerSettings,
+) -> TelemetryEmitter:
+    if settings.environment is Environment.LOCAL:
+        return InMemoryTelemetryEmitter()
+    from app.adapters.aws.telemetry import CloudWatchEMFTelemetryEmitter
+
+    return CloudWatchEMFTelemetryEmitter(environment=settings.environment.value)
+
+
 def build_work_admission(
     settings: Settings | WorkerSettings | AgentWorkerSettings,
+    telemetry: TelemetryEmitter | None = None,
 ) -> WorkAdmission:
     rates = _build_rate_limit_store(settings)
+    telem = telemetry or _build_telemetry(settings)
     if settings.environment is Environment.LOCAL:
-        return WorkAdmission(leases=InMemoryWorkLeaseStore(), rates=rates)
+        return WorkAdmission(leases=InMemoryWorkLeaseStore(), rates=rates, telemetry=telem)
     from app.adapters.aws.work_lease_store import DynamoDBWorkLeaseStore
 
     assert settings.rate_limit_table_name is not None
@@ -245,21 +268,24 @@ def build_work_admission(
             endpoint_url=settings.aws.endpoint_url,
         ),
         rates=rates,
+        telemetry=telem,
     )
 
 
 def build_container(settings: Settings | None = None) -> Container:
     resolved = settings or get_settings()
+    telemetry = _build_telemetry(resolved)
     container = Container(
         settings=resolved,
         identity=_build_identity(resolved),
-        llm=_build_llm(resolved),
-        reviewer_llm=_build_reviewer_llm(resolved),
+        llm=_build_llm(resolved, telemetry=telemetry),
+        reviewer_llm=_build_reviewer_llm(resolved, telemetry=telemetry),
         embeddings=_build_embeddings(resolved),
         vectors=_build_vector_store(resolved),
         documents=_build_document_store(resolved),
         events=_build_event_publisher(resolved),
         rate_limits=_build_rate_limit_store(resolved),
+        telemetry=telemetry,
     )
     logger.info(
         "container_built",
@@ -283,19 +309,22 @@ class WorkerContainer:
     vectors: VectorStore
     embeddings: EmbeddingProvider
     admission: WorkAdmission
+    telemetry: TelemetryEmitter
 
 
 def build_worker_container(
     settings: Settings | WorkerSettings | None = None,
 ) -> WorkerContainer:
     resolved = settings or get_worker_settings()
+    telemetry = _build_telemetry(resolved)
     container = WorkerContainer(
         settings=resolved,
         documents=_build_document_store(resolved),
         events=_build_event_publisher(resolved),
         vectors=_build_vector_store(resolved),
         embeddings=_build_embeddings(resolved),
-        admission=build_work_admission(resolved),
+        admission=build_work_admission(resolved, telemetry=telemetry),
+        telemetry=telemetry,
     )
     logger.info(
         "worker_container_built",
@@ -316,6 +345,7 @@ class ResearchAgentWorkerContainer:
     embeddings: EmbeddingProvider
     vectors: VectorStore
     admission: WorkAdmission
+    telemetry: TelemetryEmitter
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,6 +355,7 @@ class RiskAgentWorkerContainer:
     settings: AgentWorkerSettings
     llm: LLMProvider
     admission: WorkAdmission
+    telemetry: TelemetryEmitter
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,6 +365,7 @@ class ReviewerAgentWorkerContainer:
     settings: AgentWorkerSettings
     reviewer_llm: LLMProvider
     admission: WorkAdmission
+    telemetry: TelemetryEmitter
 
 
 def build_research_agent_worker_container(
@@ -341,12 +373,14 @@ def build_research_agent_worker_container(
 ) -> ResearchAgentWorkerContainer:
     """Build the least-privilege dependency graph for Research."""
     resolved = settings or get_agent_worker_settings()
+    telemetry = _build_telemetry(resolved)
     return ResearchAgentWorkerContainer(
         settings=resolved,
-        llm=_build_llm(resolved),
+        llm=_build_llm(resolved, telemetry=telemetry),
         embeddings=_build_embeddings(resolved),
         vectors=_build_vector_store(resolved),
-        admission=build_work_admission(resolved),
+        admission=build_work_admission(resolved, telemetry=telemetry),
+        telemetry=telemetry,
     )
 
 
@@ -355,10 +389,12 @@ def build_risk_agent_worker_container(
 ) -> RiskAgentWorkerContainer:
     """Build the least-privilege dependency graph for Risk."""
     resolved = settings or get_agent_worker_settings()
+    telemetry = _build_telemetry(resolved)
     return RiskAgentWorkerContainer(
         settings=resolved,
-        llm=_build_llm(resolved),
-        admission=build_work_admission(resolved),
+        llm=_build_llm(resolved, telemetry=telemetry),
+        admission=build_work_admission(resolved, telemetry=telemetry),
+        telemetry=telemetry,
     )
 
 
@@ -367,8 +403,10 @@ def build_reviewer_agent_worker_container(
 ) -> ReviewerAgentWorkerContainer:
     """Build the least-privilege dependency graph for Reviewer."""
     resolved = settings or get_agent_worker_settings()
+    telemetry = _build_telemetry(resolved)
     return ReviewerAgentWorkerContainer(
         settings=resolved,
-        reviewer_llm=_build_reviewer_llm(resolved),
-        admission=build_work_admission(resolved),
+        reviewer_llm=_build_reviewer_llm(resolved, telemetry=telemetry),
+        admission=build_work_admission(resolved, telemetry=telemetry),
+        telemetry=telemetry,
     )
