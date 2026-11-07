@@ -1,0 +1,138 @@
+name: Nightly AI & Security Evaluation
+
+# Runs the reproducible Phase 9 evaluation suite against PostgreSQL + pgvector
+# under the restricted `cloudguard_app` runtime database role (`NOBYPASSRLS`).
+#
+# Cost & credential boundary:
+# - Uses `local_pgvector_fixture` mode by default so zero paid cloud inference
+#   or AWS credentials are required.
+# - Security regressions (cross-tenant leaks, unauthorized disclosures, prompt
+#   injection breaches) fail the workflow immediately.
+# - Advisory quality metrics and full JSON/Markdown reports are uploaded as
+#   workflow artifacts for trend inspection.
+
+on:
+  schedule:
+    - cron: "15 3 * * *"
+  workflow_dispatch:
+    inputs:
+      enforce_quality_gate:
+        description: "Fail workflow if advisory quality thresholds are not met"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ENVIRONMENT: local
+  LOG_FORMAT: json
+  LOG_LEVEL: WARNING
+  DB_HOST: localhost
+  DB_PORT: "5432"
+  DB_NAME: cloudguard_test
+  DB_USER: cloudguard_app
+  DB_PASSWORD: cloudguard_app_test_password
+  TEST_DB_ADMIN_USER: postgres
+  TEST_DB_ADMIN_PASSWORD: postgres_admin_test_password
+  RUN_DB_TESTS: "1"
+  REQUIRE_SECURITY_DB_TESTS: "1"
+  LOCAL_AUTH_SECRET: ci-only-not-a-real-secret-32-characters-minimum
+  IDENTITY_PROVIDER: local
+  LLM_PROVIDER: mock
+  VECTOR_STORE: pgvector
+  DOCUMENT_STORE: memory
+  EVENT_PUBLISHER: memory
+
+jobs:
+  evaluation:
+    name: Phase 9 Evaluation Suite (pgvector + RLS)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres_admin_test_password
+          POSTGRES_DB: cloudguard_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cloudguard_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Create non-superuser application database role
+        env:
+          PGPASSWORD: postgres_admin_test_password
+        run: |
+          psql -h localhost -U postgres -d cloudguard_test -v ON_ERROR_STOP=1 <<'SQL'
+            CREATE ROLE cloudguard_app LOGIN PASSWORD 'cloudguard_app_test_password'
+              NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+            GRANT CONNECT ON DATABASE cloudguard_test TO cloudguard_app;
+            GRANT USAGE ON SCHEMA public TO cloudguard_app;
+          SQL
+
+      - name: Apply migrations as schema owner and seed organizations
+        working-directory: backend
+        env:
+          DB_USER: postgres
+          DB_PASSWORD: postgres_admin_test_password
+        run: |
+          alembic upgrade head
+          python ../scripts/seed_data.py
+
+      - name: Run evaluation unit & integration test suite under cloudguard_app
+        working-directory: backend
+        run: pytest tests/unit/test_evaluation_harness.py tests/integration/test_evaluations_api.py tests/security/test_rls_security.py -ra
+
+      - name: Execute 50-case Golden Dataset & Adversarial Corpus (local_pgvector_fixture)
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ inputs.enforce_quality_gate }}" = "true" ]; then
+            EXTRA_ARGS="--enforce-quality-gate"
+          fi
+          python scripts/run_evals.py \
+            --mode local_pgvector_fixture \
+            --persist \
+            --output-json eval-results.json \
+            --output-markdown eval-summary.md \
+            $EXTRA_ARGS
+          cat eval-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload evaluation artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase9-evaluation-report
+          path: |
+            eval-results.json
+            eval-summary.md
+          retention-days: 14
+

@@ -40,7 +40,7 @@ from app.core.logging import bind_request_context, get_logger
 from app.models.principal import Principal
 from app.ports.identity_provider import TokenVerificationError
 from app.repositories.database import tenant_session
-from app.security.authz import Permission, require_permission
+from app.security.authz import Permission, has_permission, require_permission
 from app.security.claims import claims_to_principal
 from app.security.rate_limits import (
     TENANT_MULTIPLIER,
@@ -162,5 +162,18 @@ def requires(permission: Permission) -> DependsMarker:
 
     async def _guard(principal: PrincipalDep) -> None:
         require_permission(principal, permission)
+
+    return cast(DependsMarker, Depends(_guard))
+
+
+def requires_any(*permissions: Permission) -> DependsMarker:
+    """Route guard requiring at least one of the specified permissions."""
+    if not permissions:
+        raise ValueError("requires_any must specify at least one permission.")
+
+    async def _guard(principal: PrincipalDep) -> None:
+        if any(has_permission(principal, p) for p in permissions):
+            return
+        require_permission(principal, permissions[0])
 
     return cast(DependsMarker, Depends(_guard))

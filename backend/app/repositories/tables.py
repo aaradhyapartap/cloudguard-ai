@@ -685,3 +685,114 @@ class Approval(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class EvaluationRun(Base):
+    """Tenant-scoped immutable evaluation run record.
+
+    Stores dataset version, execution provenance (deterministic_fixture,
+    local_pgvector_fixture, or live_bedrock), security gate outcome, aggregate
+    metrics, per-category breakdowns, and individual case results.
+    """
+
+    __tablename__ = "evaluation_runs"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_evaluation_runs_org_id"),
+        ForeignKeyConstraint(
+            ["organization_id", "triggered_by"],
+            ["users.organization_id", "users.id"],
+            ondelete="RESTRICT",
+            name="fk_evaluation_runs_triggered_by_org",
+        ),
+        Index(
+            "ix_evaluation_runs_org_created",
+            "organization_id",
+            "created_at",
+        ),
+        Index(
+            "ix_evaluation_runs_org_triggered_by",
+            "organization_id",
+            "triggered_by",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    triggered_by: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=False,
+    )
+    dataset_version: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    execution_mode: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    embedding_model_id: Mapped[str] = mapped_column(
+        String(256),
+        nullable=False,
+    )
+    generation_model_id: Mapped[str] = mapped_column(
+        String(256),
+        nullable=False,
+    )
+    reviewer_model_id: Mapped[str] = mapped_column(
+        String(256),
+        nullable=False,
+    )
+    judge_model_id: Mapped[str] = mapped_column(
+        String(256),
+        nullable=False,
+    )
+    security_gate_passed: Mapped[bool] = mapped_column(
+        nullable=False,
+        server_default="false",
+    )
+    quality_gate_advisory_passed: Mapped[bool] = mapped_column(
+        nullable=False,
+        server_default="false",
+    )
+    metrics_summary: Mapped[dict[str, object]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+    )
+    category_breakdown: Mapped[list[dict[str, object]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
+    case_results: Mapped[list[dict[str, object]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
+    provenance_notes: Mapped[list[str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )

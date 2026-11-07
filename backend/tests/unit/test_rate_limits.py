@@ -28,6 +28,10 @@ from app.security.rate_limits import (
     ("GET", "/compliance/assessments", "compliance-read"),
     ("GET", "/approvals/{approval_id}", "approval-read"),
     ("POST", "/approvals/{approval_id}/decision", "approval-decision"),
+    ("GET", "/evaluations/dataset", "evaluation-read"),
+    ("GET", "/evaluations/runs", "evaluation-read"),
+    ("GET", "/evaluations/runs/{run_id}", "evaluation-read"),
+    ("POST", "/evaluations/runs", "evaluation-run"),
     ("GET", "/me", "general"),
 ])
 def test_existing_route_policy(method: str, route: str, name: str) -> None:

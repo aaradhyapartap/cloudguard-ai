@@ -66,7 +66,8 @@ const NAV = [
     label: 'Analytics',
     icon: BarChart3,
     phase: 'Phase 9',
-    permission: 'analytics:read_own',
+    ready: true,
+    permissions: ['analytics:read_own', 'analytics:read_team'],
   },
   {
     href: '/audit',
@@ -87,9 +88,15 @@ const NAV = [
 export function Sidebar() {
   const pathname = usePathname();
   const { can } = useAuth();
-  const visible = NAV.filter(
-    (item) => !('permission' in item) || can(item.permission),
-  );
+  const visible = NAV.filter((item) => {
+    if ('permissions' in item) {
+      return item.permissions.some((perm) => can(perm));
+    }
+    if ('permission' in item) {
+      return can(item.permission);
+    }
+    return true;
+  });
 
   return (
     <nav
@@ -146,7 +153,7 @@ export function Sidebar() {
       </ul>
 
       <p className="border-t border-white/10 px-4 py-3 font-mono text-[10px] text-white/35">
-        v0.1.0 · phase 1
+        v0.1.0 · phase 9
       </p>
     </nav>
   );

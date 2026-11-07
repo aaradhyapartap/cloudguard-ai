@@ -158,6 +158,26 @@ ROUTE_MATRIX: dict[tuple[str, str], dict[Role, int]] = {
         Role.MANAGER: 404,
         Role.ADMIN: 403,
     },
+    ("GET", "/api/v1/evaluations/dataset"): {
+        Role.ANALYST: 200,
+        Role.MANAGER: 200,
+        Role.ADMIN: 200,
+    },
+    ("GET", "/api/v1/evaluations/runs"): {
+        Role.ANALYST: 200,
+        Role.MANAGER: 200,
+        Role.ADMIN: 200,
+    },
+    ("GET", "/api/v1/evaluations/runs/{run_id}"): {
+        Role.ANALYST: 404,
+        Role.MANAGER: 404,
+        Role.ADMIN: 404,
+    },
+    ("POST", "/api/v1/evaluations/runs"): {
+        Role.ANALYST: 201,
+        Role.MANAGER: 201,
+        Role.ADMIN: 403,
+    },
 }
 
 
@@ -197,6 +217,7 @@ def test_route_protection_matrix(
         .replace("{assessment_id}", MISSING_DOCUMENT_ID)
         .replace("{control_assessment_id}", MISSING_DOCUMENT_ID)
         .replace("{approval_id}", MISSING_APPROVAL_ID)
+        .replace("{run_id}", MISSING_APPROVAL_ID)
     )
     headers = bearer(token_signer, principal_for(role))
 
@@ -261,6 +282,13 @@ def test_route_protection_matrix(
             request_path,
             headers=headers,
             json={"decision": "approved"},
+        )
+    elif method == "POST" and path == "/api/v1/evaluations/runs":
+        response = client.request(
+            method,
+            request_path,
+            headers=headers,
+            json={"execution_mode": "deterministic_fixture", "max_cases": 1},
         )
     else:
         response = client.request(

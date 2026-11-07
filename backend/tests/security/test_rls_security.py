@@ -60,6 +60,7 @@ EXPECTED_FORCED_RLS_TENANT_TABLES: frozenset[str] = frozenset(
         "approvals",
         "security_reviews",
         "approval_audit_events",
+        "evaluation_runs",
     }
 )
 
@@ -318,6 +319,65 @@ async def test_migration_0005_expected_indexes_exist_in_postgresql() -> None:
     assert not missing, f"Missing expected migration 0005 indexes: {sorted(missing)}"
 
 
+@pytest.mark.asyncio
+async def test_evaluation_runs_rls_isolation_and_append_only_privileges() -> None:
+    run_a = uuid4()
+    insert_sql = text(
+        "INSERT INTO evaluation_runs ("
+        "id, organization_id, triggered_by, dataset_version, execution_mode, "
+        "embedding_model_id, generation_model_id, reviewer_model_id, judge_model_id, "
+        "started_at, completed_at"
+        ") VALUES ("
+        ":id, :org, :user, '1.0.0', 'deterministic_fixture', "
+        "'eval:e', 'eval:g', 'eval:r', 'eval:j', now(), now()"
+        ")"
+    )
+
+    async with tenant_session(TENANT_A) as session:
+        await session.execute(insert_sql, {"id": run_a, "org": TENANT_A, "user": USER_A})
+
+    # Untenanted and cross-tenant reads see nothing.
+    async with untenanted_session() as session:
+        assert (
+            await session.execute(text("SELECT id FROM evaluation_runs"))
+        ).scalars().all() == []
+    async with tenant_session(TENANT_B) as session:
+        assert (
+            await session.execute(
+                text("SELECT id FROM evaluation_runs WHERE id = :id"), {"id": run_a}
+            )
+        ).scalar_one_or_none() is None
+    async with tenant_session(TENANT_A) as session:
+        assert (
+            await session.execute(
+                text("SELECT id FROM evaluation_runs WHERE id = :id"), {"id": run_a}
+            )
+        ).scalar_one() == run_a
+
+    # WITH CHECK rejects forging another tenant's organization_id.
+    with pytest.raises(Exception, match="policy"):
+        async with tenant_session(TENANT_A) as session:
+            await session.execute(
+                insert_sql, {"id": uuid4(), "org": TENANT_B, "user": USER_B}
+            )
+
+    # Runtime role is append-only on evaluation_runs.
+    with pytest.raises(Exception, match="permission denied"):
+        async with tenant_session(TENANT_A) as session:
+            await session.execute(
+                text("UPDATE evaluation_runs SET security_gate_passed = true WHERE id = :id"),
+                {"id": run_a},
+            )
+    with pytest.raises(Exception, match="permission denied"):
+        async with tenant_session(TENANT_A) as session:
+            await session.execute(
+                text("DELETE FROM evaluation_runs WHERE id = :id"), {"id": run_a}
+            )
+    with pytest.raises(Exception, match="permission denied"):
+        async with tenant_session(TENANT_A) as session:
+            await session.execute(text("TRUNCATE TABLE evaluation_runs"))
+
+
 def test_published_migrations_sequence_is_intact() -> None:
     migrations_dir = Path(__file__).parents[2] / "migrations" / "versions"
     expected = [
@@ -333,6 +393,7 @@ def test_published_migrations_sequence_is_intact() -> None:
         "0010_approval_callback_recovery.py",
         "0011_approval_execution_audit.py",
         "0012_runtime_role_privileges.py",
+        "0013_evaluation_runs.py",
     ]
     actual = sorted(
         f.name
