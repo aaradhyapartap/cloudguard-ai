@@ -1,5 +1,7 @@
 # Phase 11 — DevOps Handoff
 
+> **Historical Pre-Commit Checkpoint Notice:** This document records the pre-commit review checkpoint for Phase 11. Phase 11 was subsequently committed (`f267aa028df8688dbaac452be4dd0ff3aba928f9` + `PyYAML` follow-up `a318c0c45c70db857dc727061c66ad701b164d5e`) and verified in GitHub Actions CI (Run `42349837636`) on branch `phase-11-devops` (Draft PR #4). For current repository status, see [`current-task.md`](current-task.md) and [`phase12-handoff.md`](phase12-handoff.md).
+
 **Branch:** `phase-11-devops`  
 **Parent commit:** `4d7aa9c5b0f68d1858d757484e4df2f7057120e1` (HEAD of `phase-10-observability`)  
 **Status:** Locally validated, reviewable checkpoint. Zero cloud resources deployed; zero live costs incurred; working tree unstaged.

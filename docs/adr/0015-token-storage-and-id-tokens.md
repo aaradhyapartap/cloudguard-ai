@@ -57,7 +57,13 @@ that; `sessionStorage` only shortens the window by dying with the tab.
 
 What actually reduces the risk: a restrictive CSP, no `dangerouslySetInnerHTML`
 anywhere in the codebase, one-hour tokens, and Cognito token revocation enabled
-so a stolen refresh token can be killed.
+so a stolen refresh token can be killed. In Phase 8.5, the Cognito Hosted UI
+client flow in `frontend/src/lib/auth.ts` and `AuthProvider.tsx` was completed
+with RFC 7636 PKCE (`S256`, 48-byte verifier), 24-byte `state` and `nonce`
+records in `sessionStorage` (`cloudguard.auth.pkce`), `/oauth2/token` code
+exchange, client-side ID token claim verification (`iss`, `aud`, `token_use=id`,
+`nonce`, `exp`), callback URL parameter scrubbing, and logout/cancellation race
+protection (`AuthProvider.test.tsx`).
 
 This belongs in `SECURITY.md` under known limitations, not buried. A threat
 model that lists no residual risk is a threat model nobody believes.

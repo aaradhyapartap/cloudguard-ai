@@ -52,3 +52,27 @@ than silently returning `None`.
 
 If by Phase 11 there is still exactly one implementation of every port, the
 abstraction did not pay for itself and should be collapsed.
+
+**Phase 12 outcome:** By Phase 11, the `app/ports/` boundary grew to 17 domain
+port modules (18 abstract interfaces). **13 port modules** have both local/test
+adapters and AWS/cloud adapters: `document_store` (`S3DocumentStore`),
+`event_publisher` (`EventBridgePublisher`), `identity_provider`
+(`CognitoIdentityProvider`), `llm_provider` (`BedrockLLMProvider` +
+`BedrockEmbeddingProvider`), `vector_store` (`AuroraDataAPIVectorStore` +
+`S3VectorStore`), `rate_limit_store` (`DynamoDBRateLimitStore`),
+`work_lease_store` (`DynamoDBWorkLeaseStore`), `telemetry`
+(`CloudWatchEMFTelemetryEmitter`), `document_processing_repository`
+(`AuroraDataAPIDocumentProcessingRepository`), `approval_creation_repository`
+(`AuroraDataAPIApprovalCreationRepository`), `approval_callback`
+(`StepFunctionsApprovalCallbackAdapter`), `approval_callback_recovery_repository`
+(`AuroraDataAPIApprovalCallbackRecoveryRepository`), and
+`approval_execution_repository` (`AuroraDataAPIApprovalExecutionRepository`).
+The remaining **4 port modules** (`approval_repository`, `compliance_repository`,
+`evaluation_repository`, and `approved_action_executor`) currently have
+local/SQLAlchemy implementations only: in deployed AWS workflows, bounded
+approved-action execution (`create_security_review`) is performed directly inside
+`AuroraDataAPIApprovalExecutionRepository.execute_for_workflow`, while
+`ApprovalRepository`, `ComplianceRepository`, and `EvaluationRepository` back
+the synchronous FastAPI HTTP routes and local workflows on the deferred HTTP API
+Data API persistence boundary ([ADR-0008](0008-lambda-outside-vpc-via-aurora-data-api.md)).
+Throughout, `app/services/` remains completely free of `boto3` and SQLAlchemy types.

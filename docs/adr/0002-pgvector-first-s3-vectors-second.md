@@ -26,11 +26,12 @@ The vector persistence solution must:
 
 Adopt `pgvector` with 1024-dimensional embeddings (Amazon Titan Text Embeddings v2) and HNSW cosine distance indexing (`vector_cosine_ops`) collocated on the primary PostgreSQL / Aurora database.
 
-Vector operations are abstracted behind the `VectorStore` domain port (`backend/app/ports/vector_store.py`), with two concrete implementations:
-- Local development & CI: `SQLAlchemyVectorStore` using `pgvector.sqlalchemy` and `tenant_session()`.
-- Deployed AWS Lambda: `AuroraDataAPIVectorStore` executing parameterized SQL with `:embedding::vector` type casts over the Aurora Data API.
+Vector operations are abstracted behind the `VectorStore` domain port (`backend/app/ports/vector_store.py`), with concrete implementations across phases:
+- Local development & CI: `SQLAlchemyVectorStore` using `pgvector.sqlalchemy` and `tenant_session()` (plus `InMemoryVectorStore` for pure unit tests).
+- Deployed AWS Lambda (`pgvector` mode): `AuroraDataAPIVectorStore` executing parameterized SQL with `:embedding::vector` type casts over the Aurora Data API.
+- Deployed AWS Lambda (`s3_vectors` mode, added in Phase 11): `S3VectorStore` (`backend/app/adapters/aws/s3_vector_store.py`) implementing deterministic `{org_id}#{doc_id}#{chunk_id}` keys, pre-operation SDK contract validation against `GetIndex` (`response["index"]["metadataConfiguration"]["nonFilterableMetadataKeys"]`, enforcing 1024 dimensions, cosine distance, and filterable `organization_id`, `confidentiality_level`, and `document_id`), contradictory metadata suppression, nonfinite distance rejection, and defense-in-depth post-filtering.
 
-The architecture defers S3 Vectors to Phase 11 as a secondary adapter to benchmark against pgvector.
+Phase 11 also delivers `scripts/benchmark_vector_stores.py` to compare `pgvector` and `S3VectorStore` across offline synthetic fixtures, local PostgreSQL `pgvector`, and gated live-cloud benchmarks.
 
 ## Consequences
 

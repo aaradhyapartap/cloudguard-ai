@@ -848,6 +848,83 @@ sequenceDiagram
     end
 ```
 
+### O.3 Phase 12 Implementation Reconciliation (Local vs. Deployed-Worker vs. Unprovisioned)
+
+Whereas §O.1 and §O.2 record the original Phase 0 target architecture, the diagram and table below record the exact implementation boundaries through Phase 12:
+
+```mermaid
+flowchart TB
+    classDef localPath fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#064e3b
+    classDef workerDesign fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a8a
+    classDef unprovisioned fill:#fef3c7,stroke:#d97706,stroke-width:2px,stroke-dasharray: 5 5,color:#78350f
+
+    subgraph Legend["Implementation Status"]
+        K1["1. Implemented & Verified Local / CI Path"]:::localPath
+        K2["2. Implemented CDK & Deployed-Worker Design (Synthesized & Tested; Not Live-Deployed)"]:::workerDesign
+        K3["3. Target / External Prerequisite Not Provisioned by Repository CDK"]:::unprovisioned
+    end
+
+    subgraph ClientEdge["Client & Edge"]
+        SPA["Next.js 15 Static Export SPA<br/>(PKCE S256 + state/nonce + sessionStorage)"]:::localPath
+        EDGE["CloudFront + S3 Website Bucket + AWS WAF + API Gateway JWT Authorizer"]:::unprovisioned
+    end
+
+    subgraph HTTPAPI["Synchronous HTTP API"]
+        API_LOCAL["FastAPI HTTP App (app/main.py)<br/>RBAC + Rate Admission + Nonce Framing + Deterministic Scoring<br/>Uses SQLAlchemy asyncpg TCP Session (Port 5432)<br/>(Prohibited in Out-of-VPC Lambda without Data API HTTP Adapter)"]:::localPath
+    end
+
+    subgraph AsyncWorkers["Asynchronous Serverless Workers (Out-of-VPC)"]
+        ING_W["CloudGuardIngestionStack<br/>S3 Upload Bucket + EventBridge + Step Functions + SQS DLQ<br/>deployed_document_worker.py (RDS Data API)"]:::workerDesign
+        AG_W["CloudGuardAgentWorkflowStack<br/>Step Functions: Research -> Risk -> Deterministic Score -> Reviewer<br/>-> .waitForTaskToken Approval -> ApprovedAction<br/>+ Scheduled Callback Recovery Worker (RDS Data API)"]:::workerDesign
+    end
+
+    subgraph DataStores["Persistence & State"]
+        PG_LOC[("Local / CI PostgreSQL 16 + pgvector<br/>Forced RLS (cloudguard_app NOBYPASSRLS)<br/>Canonical approval_audit_events Trigger Ledger")]:::localPath
+        AURORA_EXT[("External Aurora Serverless v2 PostgreSQL + Data API<br/>+ Secrets Manager Secret (External Prerequisite)")]:::unprovisioned
+        RL_TABLE[("CloudGuardRateLimitsStack<br/>DynamoDB Rate-Limit & Work-Lease Table")]:::workerDesign
+        S3_VEC[("S3VectorStore Adapter (Optional)<br/>(Requires External S3 Vector Bucket & Index)")]:::workerDesign
+        DDB_AUD[("General DynamoDB AuditEvent / AgentExecution<br/>(Not Implemented — PG approval_audit_events is Canonical per ADR-0017)")]:::unprovisioned
+    end
+
+    subgraph AIAndOps["AI, Observability & CI/CD"]
+        FIX_AI["Deterministic Mock / Fixture LLM & Embeddings<br/>(EvaluationHarness & CI Tests)"]:::localPath
+        BEDROCK_AD["BedrockLLMProvider + Titan Embeddings<br/>(Converse API + Guardrail Intervention Handling)"]:::workerDesign
+        GR_EXT["External Bedrock Guardrail Resource<br/>(BEDROCK_GUARDRAIL_ID + VERSION)"]:::unprovisioned
+        OBS_ST["CloudGuardObservabilityStack<br/>CloudWatch EMF Emitter + 7 Alarms + Operational Dashboard"]:::workerDesign
+        OIDC_ST["CloudGuardOIDCStack + deploy.yml<br/>Keyless GitHub OIDC Role + verify_deployment_ci.py"]:::workerDesign
+    end
+
+    SPA --> API_LOCAL
+    SPA -.-> EDGE -.-> API_LOCAL
+    API_LOCAL --> PG_LOC
+    API_LOCAL --> RL_TABLE
+    API_LOCAL --> FIX_AI
+    API_LOCAL --> BEDROCK_AD
+
+    ING_W -->|"HTTPS Data API"| AURORA_EXT
+    ING_W --> BEDROCK_AD
+    ING_W --> S3_VEC
+    ING_W --> RL_TABLE
+
+    AG_W -->|"HTTPS Data API"| AURORA_EXT
+    AG_W --> BEDROCK_AD
+    AG_W --> S3_VEC
+    AG_W --> RL_TABLE
+    BEDROCK_AD -.-> GR_EXT
+
+    API_LOCAL --> OBS_ST
+    ING_W --> OBS_ST
+    AG_W --> OBS_ST
+```
+
+| Architectural Surface | Phase 0 Target | Phase 12 Implemented Reality |
+|---|---|---|
+| **Approval Audit Ledger** | DynamoDB `AuditEvent` & `AgentExecution` | **PostgreSQL `approval_audit_events` is canonical** ([ADR-0017](../adr/0017-postgresql-approval-audit-canonical.md)), populated by database triggers in the approval transaction under forced RLS. General DynamoDB `AuditEvent`/`AgentExecution` tables are not implemented and no dual write exists. |
+| **DynamoDB Usage** | Audit & agent traces | **Operational admission only** ([ADR-0018](../adr/0018-shared-api-rate-admission.md)): `CloudGuardRateLimitsStack` provisions `cloudguard-rate-limits-<env>` for shared API rate counters and expiring worker concurrency leases (`WorkAdmission`). |
+| **Agent Graph** | 7 agents in Phase 0 roadmap | **4 agents implemented in code**: `ResearchAgent`, `RiskAgent`, `ReviewerAgent` (orchestrated in `AgentWorkflow` and `CloudGuardAgentWorkflowStack`), plus bounded `ComplianceAgent` / `ComplianceCandidateExtractionService`. Standalone Investigation, Remediation, and Executive Summary agents remain future scope. |
+| **Database Access Boundary** | Lambda outside VPC via Aurora Data API ([ADR-0008](../adr/0008-lambda-outside-vpc-via-aurora-data-api.md)) | **Implemented for all 7 deployed background workers** (`deployed_document_worker.py`, `deployed_research_agent_worker.py`, `deployed_risk_agent_worker.py`, `deployed_reviewer_agent_worker.py`, `deployed_approval_creation_worker.py`, `deployed_approval_callback_recovery_worker.py`, `deployed_approved_action_execution_worker.py`). **FastAPI HTTP routes (`app/api/v1/`) and 4 synchronous persistence ports (`approval_repository`, `compliance_repository`, `evaluation_repository`, `approved_action_executor`) use `asyncpg` TCP sessions (`tenant_session()`)** for local/CI execution and must not be deployed into an out-of-VPC Lambda without either a Data API HTTP repository layer or an in-VPC compute target. |
+| **Public Edge & External Cloud Resources** | CloudFront, WAF, API Gateway JWT Authorizer, Aurora cluster, KMS CMK, Guardrail resource | **Not provisioned by current CDK stacks.** Aurora Serverless v2 (`AWS_AURORA_CLUSTER_ARN`, `AWS_AURORA_SECRET_ARN`) and production Bedrock Guardrail (`BEDROCK_GUARDRAIL_ID`, `BEDROCK_GUARDRAIL_VERSION`) are external prerequisites injected at deployment time. |
+
 ---
 
 ## P. Technology Decisions
@@ -929,19 +1006,27 @@ For SWE and data roles more broadly, lead with the engineering rather than the A
 
 ### R.4 Metrics to capture as you build — **measured, never estimated**
 
-Leave these blank until Phase 9 produces real numbers:
+Measured in Phase 9 (`scripts/run_evals.py --mode local_pgvector_fixture`, 50 golden cases + 16 adversarial cases over local PostgreSQL 16 + `pgvector` with deterministic fixture providers `eval:feature-hash-1024-v1` / `eval:fixture-llm-v1`; **not** live Amazon Bedrock model evaluations):
 
-```
-Retrieval precision@5 / recall@10   : ___
-Groundedness score                  : ___
-Citation accuracy                   : ___
-Hallucination rate                  : ___
-p50 / p95 end-to-end latency        : ___ / ___
-Cost per 1,000 queries              : $___
-Agent task completion rate          : ___
-Automated tests (unit/int/security) : ___ / ___ / ___
-Cross-tenant leakage incidents      : ___ (target: 0, proven by test)
-Documents processed in sample corpus: ___
+```text
+Execution mode                      : local_pgvector_fixture (synthetic fixture providers, $0 cloud spend)
+Security Gate (Blocking)            : PASS (16/16 adversarial cases passed)
+Quality Gate (Advisory)             : WARN (fixture advisory baseline)
+Retrieval precision@5 / recall@10   : 0.7064 / 0.9706 (34 retrieval cases)
+Context relevance score             : 0.7201 (34 retrieval cases)
+Groundedness score                  : 1.0000 (50 golden cases, deterministic fixture)
+Answer relevance score              : 0.9633 (50 golden cases, deterministic fixture)
+Citation accuracy                   : 0.8333 (34 citation cases, retrieved ∩ expected intersection; advisory threshold 0.85)
+Hallucination rate                  : 0.0000 (50 golden cases, deterministic fixture)
+Unanswerable abstention rate        : 0.5000 (16 unanswerable + ambiguous cases; advisory threshold 0.80)
+Unsafe response rate                : 0.0000 (50 golden cases)
+p50 / p95 retrieval latency (local) : 8.53 ms / 10.71 ms (local PostgreSQL pgvector fixture)
+p50 / p95 end-to-end latency (local): 17.60 ms / 33.63 ms (local fixture pipeline, no remote LLM call)
+Cost per 1,000 queries              : null / None (unmeasured in fixture mode; live Bedrock evaluation not run)
+Agent task completion rate          : 1.0000 (16 workflow cases; tool_call_success_rate: 1.0000)
+Automated tests                     : 1,392 backend (incl. 109 security regressions: 94 service/route/contract + 6 callback race + 9 PostgreSQL RLS/catalog) + 63 CDK + 8 frontend = 1,463 total
+Cross-tenant leakage incidents      : 0 (0 cross-tenant leaks, 0 unauthorized disclosures, 0 injection breaches)
+Documents processed in eval corpus  : 7 synthetic multi-tenant documents (16 indexed chunks across Acme & Globex)
 ```
 
 A resume bullet built from measured numbers survives a follow-up question. One built from plausible-sounding numbers does not, and the follow-up question always comes.
