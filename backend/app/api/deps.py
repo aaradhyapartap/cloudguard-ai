@@ -35,9 +35,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.container import Container
-from app.core.errors import AuthenticationError
+from app.core.errors import AuthenticationError, RateLimitError
 from app.core.logging import bind_request_context, get_logger
 from app.models.principal import Principal
+from app.models.telemetry import AdmissionCategory
 from app.ports.identity_provider import TokenVerificationError
 from app.repositories.database import tenant_session
 from app.security.authz import Permission, has_permission, require_permission
@@ -49,6 +50,7 @@ from app.security.rate_limits import (
     pre_auth_policy,
 )
 from app.services.identity import IdentityService
+from app.telemetry.isolation import safe_telemetry_call
 
 logger = get_logger(__name__)
 
@@ -84,9 +86,19 @@ async def enforce_pre_auth_limit(request: Request, container: ContainerDep) -> N
         # Ignore X-Forwarded-For and organization/user headers. A trusted edge
         # must supply ASGI client identity; a proxy peer safely shares a bucket.
         peer = request.client.host if request.client is not None else "unknown-peer"
-        await enforce_rate_limit(
-            container.rate_limits, policy=policy, subject=("peer", peer),
-        )
+        try:
+            await enforce_rate_limit(
+                container.rate_limits, policy=policy, subject=("peer", peer),
+            )
+        except RateLimitError:
+            if getattr(container, "telemetry", None) is not None:
+                safe_telemetry_call(
+                    container.telemetry.record_admission_decision,
+                    category=AdmissionCategory.API_RATE_LIMIT,
+                    decision="denied",
+                    reason="peer_rate_limit_exceeded",
+                )
+            raise
 
 
 async def get_principal(
@@ -112,23 +124,49 @@ async def get_principal(
         policy = authenticated_policy(request.method, _relative_route(request, container))
         # Gate before database provisioning and before any route service/model.
         # Shared buckets prevent quota bypass by changing resource IDs or tokens.
-        await enforce_rate_limit(
-            container.rate_limits, policy=policy,
-            subject=(
-                "user", str(verified_principal.organization_id), str(verified_principal.user_id),
-            ),
-        )
-        await enforce_rate_limit(
-            container.rate_limits, policy=policy, multiplier=TENANT_MULTIPLIER,
-            subject=("tenant", str(verified_principal.organization_id)),
-        )
+        try:
+            await enforce_rate_limit(
+                container.rate_limits, policy=policy,
+                subject=(
+                    "user",
+                    str(verified_principal.organization_id),
+                    str(verified_principal.user_id),
+                ),
+            )
+            await enforce_rate_limit(
+                container.rate_limits, policy=policy, multiplier=TENANT_MULTIPLIER,
+                subject=("tenant", str(verified_principal.organization_id)),
+            )
+        except RateLimitError:
+            if getattr(container, "telemetry", None) is not None:
+                safe_telemetry_call(
+                    container.telemetry.record_admission_decision,
+                    category=AdmissionCategory.API_RATE_LIMIT,
+                    decision="denied",
+                    reason="authenticated_rate_limit_exceeded",
+                )
+            raise
+
         # IdentityService manages its own sessions: it reads the untenanted
         # organizations table to learn which tenant this caller belongs to,
         # then writes inside that tenant's context.
         principal = await IdentityService().resolve(claims)
+        if getattr(container, "telemetry", None) is not None:
+            safe_telemetry_call(
+                container.telemetry.record_admission_decision,
+                category=AdmissionCategory.API_RATE_LIMIT,
+                decision="allowed",
+            )
     except TokenVerificationError as exc:
         # Provider rejection strings may include attacker-selected token claims.
         logger.warning("token_rejected", reason="verification_failed")
+        if getattr(container, "telemetry", None) is not None:
+            safe_telemetry_call(
+                container.telemetry.record_admission_decision,
+                category=AdmissionCategory.UNAUTHORIZED_ROLE,
+                decision="denied",
+                reason="verification_failed",
+            )
         raise AuthenticationError("Authentication failed.") from exc
 
     request.state.organization_id = str(principal.organization_id)

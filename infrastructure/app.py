@@ -25,6 +25,7 @@ import aws_cdk as cdk
 from stacks.agent_workflow_stack import AgentWorkflowStack
 from stacks.identity_stack import IdentityStack
 from stacks.ingestion_stack import IngestionStack
+from stacks.observability_stack import ObservabilityStack
 from stacks.rate_limit_stack import RateLimitStack
 
 app = cdk.App()
@@ -178,6 +179,23 @@ agent_workflow = AgentWorkflowStack(
     admission_table_arn=rate_limits.table.table_arn,
     env=env,
     description="Deterministic Phase 6 Research, Risk, and Reviewer agent workflow",
+)
+
+observability = ObservabilityStack(
+    app,
+    f"CloudGuardObservability-{environment_name}",
+    environment_name=environment_name,
+    ingestion_dlq=ingestion.ingestion_dlq,
+    ingestion_state_machine=ingestion.state_machine,
+    processing_function=ingestion.processing_function,
+    agent_workflow_state_machine=agent_workflow.state_machine,
+    rate_limit_table=rate_limits.table,
+    documents_bucket=ingestion.documents_bucket,
+    research_function=agent_workflow.research_function,
+    risk_function=agent_workflow.risk_function,
+    reviewer_function=agent_workflow.reviewer_function,
+    env=env,
+    description="Phase 10 CloudWatch operational dashboard and failure alarms",
 )
 
 # Tag everything. Untagged resources are how a student account quietly grows a

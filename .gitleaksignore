@@ -4,3 +4,8 @@
 # Synthetic detector-test private-key header fixture in historical Phase 8 unit test commit 65f46ceb57b0a2441b71fd425a1079528a836428; not a real private key.
 65f46ceb57b0a2441b71fd425a1079528a836428:backend/tests/unit/test_sensitive_data.py:private-key:23
 
+# Synthetic canary in telemetry privacy controls unit test in Phase 10 commit 126d3b06e9521442534ac245397453e9eadcd536; not a real credential.
+126d3b06e9521442534ac245397453e9eadcd536:backend/tests/unit/test_telemetry.py:stripe-access-token:685
+
+# Synthetic canary in telemetry privacy controls negative control test in Phase 10 commit 126d3b06e9521442534ac245397453e9eadcd536; not a real credential.
+126d3b06e9521442534ac245397453e9eadcd536:backend/tests/unit/test_telemetry.py:generic-api-key:1241

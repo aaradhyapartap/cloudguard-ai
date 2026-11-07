@@ -1,4 +1,4 @@
-﻿"""Provider-neutral contracts for the bounded Research Agent."""
+"""Provider-neutral contracts for the bounded Research Agent."""
 
 from __future__ import annotations
 
@@ -57,4 +57,4 @@ class ResearchAgentResult(BaseModel):
     retrieval_count: int = Field(ge=0)
     tool_calls_used: int = Field(ge=0)
     model_id: str
-    usage: TokenUsage
+    usage: TokenUsage | None = None

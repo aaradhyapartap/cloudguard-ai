@@ -41,7 +41,10 @@ async def _handle(event: dict[str, Any]) -> dict[str, Any]:
     if not _settings.features.agentic_workflows:
         raise RuntimeError("Agentic workflows are disabled.")
 
-    agent = RiskAgent(llm_provider=_container.llm)
+    agent = RiskAgent(
+        llm_provider=_container.llm,
+        telemetry=_container.telemetry,
+    )
 
     async with _container.admission.admit(
         organization_id=task_input.principal.organization_id, kind=WorkKind.MODEL,

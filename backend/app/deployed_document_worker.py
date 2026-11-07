@@ -114,6 +114,7 @@ async def _handle(event: dict[str, Any]) -> None:
             event_publisher=_container.events,
             vector_store=_container.vectors,
             embedding_provider=_container.embeddings,
+            telemetry=_container.telemetry,
         )
         await service.process_document(document_id)
 

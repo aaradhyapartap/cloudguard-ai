@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 
 from app.core.errors import UpstreamError
 from app.core.logging import get_logger
@@ -10,7 +11,9 @@ from app.models.ai import GenerationRequest, Message
 from app.models.principal import Principal
 from app.models.rag import RAGRequest, RAGResponse, RAGSource
 from app.models.retrieval import RetrievalRequest
+from app.models.telemetry import CostEstimate
 from app.ports.llm_provider import LLMProvider
+from app.ports.telemetry import TelemetryEmitter
 from app.security.model_output import require_model_response_allowed
 from app.security.projections import safe_source_metadata
 from app.security.prompt_isolation import (
@@ -19,6 +22,7 @@ from app.security.prompt_isolation import (
     build_system_prompt,
 )
 from app.services.retrieval import RetrievalService
+from app.telemetry.isolation import safe_telemetry_call
 
 logger = get_logger(__name__)
 
@@ -60,6 +64,7 @@ class RAGService:
         retrieval_service: RetrievalService,
         llm_provider: LLMProvider,
         max_context_chars: int = 100_000,
+        telemetry: TelemetryEmitter | None = None,
     ) -> None:
         if max_context_chars < 50:
             raise ValueError(
@@ -69,6 +74,7 @@ class RAGService:
         self._retrieval_service = retrieval_service
         self._llm_provider = llm_provider
         self._max_context_chars = max_context_chars
+        self._telemetry = telemetry
 
     async def generate_answer(
         self,
@@ -77,6 +83,7 @@ class RAGService:
         request: RAGRequest,
     ) -> RAGResponse:
         """Retrieve relevant chunks and generate a grounded answer with citations."""
+        start_time = time.perf_counter()
         # 1. Delegate retrieval to RetrievalService
         retrieval_request = RetrievalRequest(
             query=request.query,
@@ -89,7 +96,27 @@ class RAGService:
         )
 
         # 2. Zero-result shortcut: skip LLM call when no evidence is indexed
+        embed_cost = retrieval_response.cost
         if retrieval_response.total == 0 or not retrieval_response.matches:
+            duration_ms = (time.perf_counter() - start_time) * 1000.0
+            if self._telemetry is not None:
+                safe_telemetry_call(
+                    self._telemetry.record_latency,
+                    "rag_generate_answer",
+                    duration_ms,
+                    dimensions={"Operation": "rag_generate_answer", "Status": "no_evidence"},
+                )
+                safe_telemetry_call(
+                    self._telemetry.record_query_cost,
+                    total_cost_usd=(
+                        embed_cost.estimated_inference_cost_usd
+                        if (embed_cost is not None and embed_cost.is_measured)
+                        else None
+                    ),
+                    is_measured=(embed_cost is not None and embed_cost.is_measured),
+                    is_partial=False,
+                    operation="rag_generate_answer",
+                )
             logger.info(
                 "rag_zero_retrieval_results",
                 organization_id=str(principal.organization_id),
@@ -118,12 +145,10 @@ class RAGService:
             )
 
             if remaining_budget < len(header):
-                # Not enough remaining budget to fit even the source header
                 break
 
             content_budget = remaining_budget - len(header)
             if len(match.content) <= content_budget:
-                # Whole chunk fits cleanly
                 block = f"{header}{match.content}"
                 sources.append(
                     RAGSource(
@@ -137,8 +162,6 @@ class RAGService:
                 context_blocks.append(block)
                 current_context_len += len(block) + separator_len
             elif not context_blocks:
-                # First/highest-ranked chunk alone exceeds entire budget.
-                # Deterministically truncate its content so the block fits within max_context_chars.
                 truncated_content = match.content[:content_budget]
                 block = f"{header}{truncated_content}"
                 sources.append(
@@ -154,10 +177,28 @@ class RAGService:
                 current_context_len += len(block) + separator_len
                 break
             else:
-                # Subsequent chunk does not fit whole; prefer whole-source boundaries and stop.
                 break
 
         if not context_blocks:
+            duration_ms = (time.perf_counter() - start_time) * 1000.0
+            if self._telemetry is not None:
+                safe_telemetry_call(
+                    self._telemetry.record_latency,
+                    "rag_generate_answer",
+                    duration_ms,
+                    dimensions={"Operation": "rag_generate_answer", "Status": "no_evidence"},
+                )
+                safe_telemetry_call(
+                    self._telemetry.record_query_cost,
+                    total_cost_usd=(
+                        embed_cost.estimated_inference_cost_usd
+                        if (embed_cost is not None and embed_cost.is_measured)
+                        else None
+                    ),
+                    is_measured=(embed_cost is not None and embed_cost.is_measured),
+                    is_partial=False,
+                    operation="rag_generate_answer",
+                )
             return RAGResponse(
                 answer=DEFAULT_NO_EVIDENCE_ANSWER,
                 sources=[],
@@ -202,8 +243,14 @@ class RAGService:
         # 4. Invoke LLM provider with normalized error handling
         try:
             generation_response = await self._llm_provider.generate(generation_request)
-            require_model_response_allowed(generation_response)
         except UpstreamError as exc:
+            if self._telemetry is not None:
+                safe_telemetry_call(
+                    self._telemetry.record_counter,
+                    "RAGErrors",
+                    1.0,
+                    dimensions={"Operation": "rag_generate_answer", "Status": "error"},
+                )
             logger.error(
                 "rag_llm_generation_failed",
                 organization_id=str(principal.organization_id),
@@ -213,6 +260,13 @@ class RAGService:
             )
             raise UpstreamError("The model generation request failed.") from exc
         except Exception as exc:
+            if self._telemetry is not None:
+                safe_telemetry_call(
+                    self._telemetry.record_counter,
+                    "RAGErrors",
+                    1.0,
+                    dimensions={"Operation": "rag_generate_answer", "Status": "error"},
+                )
             logger.error(
                 "rag_llm_generation_failed",
                 organization_id=str(principal.organization_id),
@@ -222,8 +276,65 @@ class RAGService:
             )
             raise UpstreamError("The model generation request failed.") from exc
 
-        # 5. Fail closed if provider returns empty content
+        # Record available usage immediately before validation (unknown stays unknown)
+        gen_cost: CostEstimate | None = None
+        if self._telemetry is not None:
+            gen_in = generation_response.usage.input_tokens if generation_response.usage else None
+            gen_out = generation_response.usage.output_tokens if generation_response.usage else None
+            raw_gen_cost = safe_telemetry_call(
+                self._telemetry.record_token_usage,
+                model_id=generation_response.model_id,
+                input_tokens=gen_in,
+                output_tokens=gen_out,
+                operation="rag_generate_answer",
+            )
+            if isinstance(raw_gen_cost, CostEstimate):
+                gen_cost = raw_gen_cost
+
+        # 5. Model response validation
+        try:
+            require_model_response_allowed(generation_response)
+        except UpstreamError as exc:
+            if self._telemetry is not None:
+                safe_telemetry_call(
+                    self._telemetry.record_counter,
+                    "RAGErrors",
+                    1.0,
+                    dimensions={"Operation": "rag_generate_answer", "Status": "error"},
+                )
+            logger.error(
+                "rag_llm_generation_failed",
+                organization_id=str(principal.organization_id),
+                user_id=str(principal.user_id),
+                model_id=self._llm_provider.chat_model_id,
+                error_type="UpstreamError",
+            )
+            raise UpstreamError("The model generation request failed.") from exc
+        except Exception as exc:
+            if self._telemetry is not None:
+                safe_telemetry_call(
+                    self._telemetry.record_counter,
+                    "RAGErrors",
+                    1.0,
+                    dimensions={"Operation": "rag_generate_answer", "Status": "error"},
+                )
+            logger.error(
+                "rag_llm_generation_failed",
+                organization_id=str(principal.organization_id),
+                user_id=str(principal.user_id),
+                model_id=self._llm_provider.chat_model_id,
+                error_type=type(exc).__name__,
+            )
+            raise UpstreamError("The model generation request failed.") from exc
+
         if not generation_response.content or not generation_response.content.strip():
+            if self._telemetry is not None:
+                safe_telemetry_call(
+                    self._telemetry.record_counter,
+                    "RAGErrors",
+                    1.0,
+                    dimensions={"Operation": "rag_generate_answer", "Status": "error"},
+                )
             logger.error(
                 "rag_llm_empty_generation_response",
                 organization_id=str(principal.organization_id),
@@ -238,6 +349,13 @@ class RAGService:
         }
         allowed_labels = {source.label for source in sources}
         if not cited_labels.issubset(allowed_labels):
+            if self._telemetry is not None:
+                safe_telemetry_call(
+                    self._telemetry.record_counter,
+                    "RAGErrors",
+                    1.0,
+                    dimensions={"Operation": "rag_generate_answer", "Status": "error"},
+                )
             logger.error(
                 "rag_llm_unknown_source_citation",
                 organization_id=str(principal.organization_id),
@@ -246,6 +364,49 @@ class RAGService:
             )
             raise UpstreamError(
                 "The model response contained an invalid or untrusted source reference."
+            )
+
+        duration_ms = (time.perf_counter() - start_time) * 1000.0
+        if self._telemetry is not None:
+            safe_telemetry_call(
+                self._telemetry.record_latency,
+                "rag_generate_answer",
+                duration_ms,
+                dimensions={"Operation": "rag_generate_answer", "Status": "success"},
+            )
+            # Query boundary cost accounting: sum component model calls
+            if (
+                embed_cost is not None
+                and embed_cost.is_measured
+                and gen_cost is not None
+                and gen_cost.is_measured
+            ):
+                query_total_cost: float | None = (
+                    (embed_cost.estimated_inference_cost_usd or 0.0)
+                    + (gen_cost.estimated_inference_cost_usd or 0.0)
+                )
+                query_is_measured = True
+                query_is_partial = False
+            elif (
+                (embed_cost is not None and embed_cost.is_measured)
+                or (gen_cost is not None and gen_cost.is_measured)
+            ):
+                # Mixed: one component known, one unknown
+                query_total_cost = None
+                query_is_measured = False
+                query_is_partial = True
+            else:
+                # Neither measured
+                query_total_cost = None
+                query_is_measured = False
+                query_is_partial = False
+
+            safe_telemetry_call(
+                self._telemetry.record_query_cost,
+                total_cost_usd=query_total_cost,
+                is_measured=query_is_measured,
+                is_partial=query_is_partial,
+                operation="rag_generate_answer",
             )
 
         logger.info(

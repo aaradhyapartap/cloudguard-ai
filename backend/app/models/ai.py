@@ -59,13 +59,19 @@ class GenerationRequest(BaseModel):
 class TokenUsage(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    input_tokens: int
-    output_tokens: int
+    input_tokens: int | None = None
+    output_tokens: int | None = None
     cached_input_tokens: int = 0
 
     @property
-    def total_tokens(self) -> int:
+    def total_tokens(self) -> int | None:
+        if self.input_tokens is None or self.output_tokens is None:
+            return None
         return self.input_tokens + self.output_tokens
+
+    @property
+    def is_complete(self) -> bool:
+        return self.input_tokens is not None and self.output_tokens is not None
 
 
 class GenerationResponse(BaseModel):
@@ -73,7 +79,7 @@ class GenerationResponse(BaseModel):
 
     content: str
     model_id: str
-    usage: TokenUsage
+    usage: TokenUsage | None = None
     stop_reason: str
     latency_ms: int
     # Provider-neutral safety metadata. Any intervention fails closed before a

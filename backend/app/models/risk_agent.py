@@ -79,4 +79,4 @@ class RiskAgentResult(BaseModel):
     estimates: list[RiskEvidenceEstimate] = Field(default_factory=list, max_length=10)
     evidence_count: int = Field(ge=0, le=10)
     model_id: str = Field(min_length=1, max_length=256)
-    usage: TokenUsage
+    usage: TokenUsage | None = None

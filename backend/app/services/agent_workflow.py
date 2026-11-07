@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Protocol
 
 from app.models.agent_workflow import (
@@ -18,8 +19,11 @@ from app.models.reviewer_agent import (
     ReviewerAgentResult,
 )
 from app.models.risk_agent import RiskAgentRequest, RiskAgentResult
+from app.models.telemetry import OperationalSignal
+from app.ports.telemetry import TelemetryEmitter
 from app.security.authz import Permission, require_permission
 from app.services.work_admission import WorkAdmission, WorkKind
+from app.telemetry.isolation import safe_telemetry_call
 
 
 class ResearchAgentPort(Protocol):
@@ -75,12 +79,14 @@ class AgentWorkflow:
         reviewer_agent: ReviewerAgentPort,
         enabled: bool,
         admission: WorkAdmission,
+        telemetry: TelemetryEmitter | None = None,
     ) -> None:
         self._research_agent = research_agent
         self._risk_agent = risk_agent
         self._reviewer_agent = reviewer_agent
         self._enabled = enabled
         self._admission = admission
+        self._telemetry = telemetry
 
     async def run(
         self,
@@ -95,14 +101,52 @@ class AgentWorkflow:
         require_permission(principal, Permission.DOCUMENT_READ)
         require_permission(principal, Permission.AI_QUERY)
 
-        async with self._admission.admit(
-            organization_id=principal.organization_id,
-            kind=WorkKind.MODEL,
-        ):
-            return await self._run_steps(
-                principal=principal,
-                request=request,
-            )
+        start_time = time.perf_counter()
+        try:
+            async with self._admission.admit(
+                organization_id=principal.organization_id,
+                kind=WorkKind.MODEL,
+            ):
+                result = await self._run_steps(
+                    principal=principal,
+                    request=request,
+                )
+
+            duration_ms = (time.perf_counter() - start_time) * 1000.0
+            if self._telemetry is not None:
+                safe_telemetry_call(
+                    self._telemetry.record_latency,
+                    "agent_workflow",
+                    duration_ms,
+                    dimensions={"Operation": "agent_workflow", "Status": result.status.value},
+                    correlation_id=request.correlation_id,
+                )
+                safe_telemetry_call(
+                    self._telemetry.record_operational_signal,
+                    OperationalSignal(
+                        event_name="agent_workflow_completed",
+                        stage="workflow",
+                        status=result.status.value,
+                        duration_ms=duration_ms,
+                        correlation_id=request.correlation_id,
+                        safe_attributes=(
+                            {"failed_step": result.failed_step}
+                            if result.failed_step
+                            else {}
+                        ),
+                    ),
+                )
+            return result
+        except Exception:
+            if self._telemetry is not None:
+                safe_telemetry_call(
+                    self._telemetry.record_counter,
+                    "AgentWorkflowErrors",
+                    1.0,
+                    dimensions={"Operation": "agent_workflow", "Status": "error"},
+                    correlation_id=request.correlation_id,
+                )
+            raise
 
     async def _run_steps(
         self,

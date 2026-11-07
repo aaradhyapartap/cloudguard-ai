@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import time
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from app.ports.document_processing_repository import DocumentProcessingRepositor
 from app.ports.document_store import DocumentStore
 from app.ports.event_publisher import EventPublisher
 from app.ports.llm_provider import EmbeddingProvider
+from app.ports.telemetry import TelemetryEmitter
 from app.ports.vector_store import VectorStore
 from app.security.ingestion_limits import (
     MAX_DOCUMENT_CHUNKS,
@@ -28,6 +30,7 @@ from app.security.sensitive_data import (
     DeterministicSensitiveDataDetector,
     minimize_model_text,
 )
+from app.telemetry.isolation import safe_telemetry_call
 
 TEXT_CHUNK_SIZE = 1000
 
@@ -46,6 +49,7 @@ class DocumentProcessingService:
         event_publisher: EventPublisher,
         vector_store: VectorStore,
         embedding_provider: EmbeddingProvider,
+        telemetry: TelemetryEmitter | None = None,
     ) -> None:
         self._scope = scope
         self._repository = repository
@@ -53,6 +57,7 @@ class DocumentProcessingService:
         self._events = event_publisher
         self._vectors = vector_store
         self._embeddings = embedding_provider
+        self._telemetry = telemetry
 
     async def process_document(self, document_id: UUID) -> None:
         organization_id = self._scope.organization_id
@@ -250,6 +255,7 @@ class DocumentProcessingService:
 
         # 4. Generate embeddings for document chunks
         _embedding_failure_msg = "The document could not be embedded."
+        start_time = time.perf_counter()
         try:
             # Detect on the complete normalized document before slicing, so a
             # sensitive value spanning a stored chunk boundary is fully masked.
@@ -285,6 +291,25 @@ class DocumentProcessingService:
                 )
             )
             raise UpstreamError(_embedding_failure_msg) from exc
+        finally:
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+
+        if self._telemetry is not None:
+            model_id = getattr(embedding_result, "model_id", "amazon.titan-embed-text-v2:0")
+            safe_telemetry_call(
+                self._telemetry.record_latency,
+                "document_embedding",
+                elapsed_ms,
+                dimensions={"Operation": "document_processing", "ModelId": model_id},
+            )
+            if getattr(embedding_result, "input_tokens", None):
+                safe_telemetry_call(
+                    self._telemetry.record_token_usage,
+                    model_id=model_id,
+                    input_tokens=embedding_result.input_tokens,
+                    output_tokens=0,
+                    operation="document_processing",
+                )
 
         # 5. Persist embeddings via VectorStore
         _vector_failure_msg = "The document vectors could not be saved."

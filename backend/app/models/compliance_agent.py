@@ -95,5 +95,5 @@ class ComplianceAgentResult(BaseModel):
     tool_calls_used: int = Field(ge=0, le=2)
     planning_model_id: str = Field(min_length=1, max_length=256)
     evaluation_model_id: str = Field(min_length=1, max_length=256)
-    planning_usage: TokenUsage
-    evaluation_usage: TokenUsage
+    planning_usage: TokenUsage | None = None
+    evaluation_usage: TokenUsage | None = None

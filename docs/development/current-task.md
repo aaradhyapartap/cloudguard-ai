@@ -327,3 +327,42 @@ For each coherent subphase:
 9. Commit, push, fetch, and compare the full local/remote hashes.
 
 Do not publish a subphase while any required control or regression is failing.
+
+---
+
+## Phase 10 - Observability (Autonomous Implementation & Review Corrections)
+
+**Branch:** `phase-10-observability`
+**Base commit:** `deb19cfe9edbcbf7100313000ca4d20425444e6c`
+**Handoff:** `docs/development/phase10-handoff.md`
+
+### Scope & Status:
+- Implemented provider-neutral telemetry contracts in `app/ports/telemetry.py`.
+- Total boundary failure isolation via `safe_telemetry_call` in `app/telemetry/isolation.py`.
+- Strict bounded metric dimension validation, closed value sets, and canary pattern scrubbing in `app/models/telemetry.py`.
+- Implemented explicitly versioned Bedrock model pricing catalog (`2026-03-01`), region (`us-east-1`), tier (`On-Demand`), and source URL in `app/telemetry/pricing.py`.
+- Implemented local in-memory emitter with bounded retention (`deque(maxlen=self._max_records)`) and test doubles.
+- Implemented AWS CloudWatch Embedded Metric Format (EMF) adapter (`CloudWatchEMFTelemetryEmitter`) with explicit multi-dimension sets and stdout documentation.
+- Integrated operational telemetry into `RetrievalService`, `RAGService`, `AgentWorkflow`, `WorkAdmission`, `RequestContextMiddleware`, and FastAPI dependency layer (`deps.py`).
+- Wired deployed worker telemetry in `deployed_research_agent_worker`, `deployed_risk_agent_worker`, `deployed_reviewer_agent_worker`, `deployed_document_worker`, and local `document_worker`.
+- Added model usage and latency recording immediately upon provider generation across Research, Risk, Reviewer, and Ingestion without double-counting.
+- Implemented CloudWatch operational dashboard and 7 CloudWatch alarms in CDK `ObservabilityStack`:
+  - DynamoDB `SystemErrors` monitored across actual operations (`UpdateItem`, `PutItem`, `DeleteItem`) via Metric Math `m0 + m1 + m2`.
+  - Honest estimated-cost-per-query view using supported CloudWatch Metric Math conditional `IF(measured > 0, cost / measured)` with `CostMeasuredQueries` denominator, cleanly omitting unmeasured periods without fabricating zero cost.
+  - Separated model-call accounting (`CostMeasuredModelCalls`, `ModelCallEstimatedCostUSD`) from query boundary cost accounting (`CostMeasuredQueries`, `EstimatedInferenceCostUSD`, `CostUnmeasuredQueries`, `CostPartialQueries`).
+  - Alarms configured with `TreatMissingData.NOT_BREACHING`.
+  - Deduplicated EMF dimension sets by unordered identity (`frozenset`).
+  - Closed-set precedence before broad canary checks and explicit allowlists for operational `safe_attributes`.
+  - Extracted available token usage and latency at the Bedrock response boundary before guardrail intervention or output validation.
+  - Wired shared telemetry into `_build_llm`, `_build_reviewer_llm`, and all container builders (`build_container`, `build_research_agent_worker_container`, `build_risk_agent_worker_container`, `build_reviewer_agent_worker_container`).
+  - Preserved unknown usage provenance on successful responses without inventing `TokenUsage(0, 0)`; distinguished known zero usage from absent/incomplete usage; ensured affected query costs remain partial/unmeasured.
+  - Removed unsupported numeric overhead estimate from EMF adapter docstring.
+- Complete test suites passed:
+  - Backend full suite: 1,327 passed, 0 failed, 0 skipped in 37.63s (real PostgreSQL + pgvector).
+  - Telemetry unit tests: 48 passed, 0 failed, 0 skipped in 0.92s.
+  - Focused unit suites: 85 passed in 1.64s (`test_container.py`, `test_bedrock_chat_llm.py`, `test_telemetry.py`).
+  - CDK infrastructure suite: 52 passed, 0 failed, 0 skipped in 217.87s.
+  - Evaluation CLI: Security Gate PASS, Advisory Quality WARN (50 golden + 16 adversarial cases).
+  - Frontend vitest: 8 passed.
+  - Ruff and mypy: clean across backend (165 files) and infrastructure (15 files).
+- All changes remain unstaged in working tree. Source-review archive generated outside repository.

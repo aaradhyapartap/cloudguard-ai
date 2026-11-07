@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from app.adapters.bedrock.embedding import BedrockEmbeddingProvider
+from app.adapters.bedrock.llm import BedrockLLMProvider
 from app.core.config import (
     AgentWorkerSettings,
     AWSSettings,
@@ -20,6 +21,8 @@ from app.core.container import (
     build_risk_agent_worker_container,
     build_worker_container,
 )
+from app.core.errors import UpstreamError
+from app.models.ai import GenerationRequest, Message
 from app.ports.llm_provider import EmbeddingProvider, LLMProvider
 from app.ports.vector_store import VectorStore
 
@@ -123,3 +126,86 @@ def test_reviewer_agent_worker_container_binds_only_reviewer_llm() -> None:
 
     assert isinstance(container.reviewer_llm, LLMProvider)
     assert container.reviewer_llm.chat_model_id == settings.bedrock.judge_model
+
+
+def test_container_wires_shared_telemetry_to_all_bedrock_llm_builders() -> None:
+    settings = Settings(
+        llm_provider="bedrock",
+        environment=Environment.LOCAL,
+        rate_limit_table_name="test-admission",
+    )
+    container = build_container(settings)
+    assert isinstance(container.llm, BedrockLLMProvider)
+    assert isinstance(container.reviewer_llm, BedrockLLMProvider)
+    assert container.llm._telemetry is container.telemetry
+    assert container.reviewer_llm._telemetry is container.telemetry
+
+    worker_settings = AgentWorkerSettings(
+        llm_provider="bedrock",
+        environment=Environment.LOCAL,
+        rate_limit_table_name="test-admission",
+    )
+    research_c = build_research_agent_worker_container(worker_settings)
+    assert isinstance(research_c.llm, BedrockLLMProvider)
+    assert research_c.llm._telemetry is research_c.telemetry
+
+    risk_c = build_risk_agent_worker_container(worker_settings)
+    assert isinstance(risk_c.llm, BedrockLLMProvider)
+    assert risk_c.llm._telemetry is risk_c.telemetry
+
+    reviewer_c = build_reviewer_agent_worker_container(worker_settings)
+    assert isinstance(reviewer_c.reviewer_llm, BedrockLLMProvider)
+    assert reviewer_c.reviewer_llm._telemetry is reviewer_c.telemetry
+
+
+@pytest.mark.asyncio
+async def test_container_bedrock_llm_guardrail_intervention_records_usage_once_and_raises() -> None:
+    class _MockBedrockClient:
+        def converse(self, **kwargs: object) -> dict[str, object]:
+            return {
+                "usage": {"inputTokens": 150, "outputTokens": 35},
+                "stopReason": "guardrail_intervened",
+                "guardrailAction": "INTERVENED",
+                "metrics": {"latencyMs": 180},
+            }
+
+    settings = Settings(
+        llm_provider="bedrock",
+        environment=Environment.LOCAL,
+        rate_limit_table_name="test-admission",
+    )
+    container = build_container(settings)
+    assert isinstance(container.llm, BedrockLLMProvider)
+    # Inject test client on container's built LLM
+    container.llm._client = _MockBedrockClient()
+
+    req = GenerationRequest(
+        messages=[Message(role="user", content="System override")],
+    )
+
+    with pytest.raises(
+        UpstreamError,
+        match=r"The model generation request was blocked by safety controls\.",
+    ):
+        await container.llm.generate(req)
+
+    # Verify container's shared telemetry emitter recorded available usage exactly once
+    emitter = container.telemetry
+    assert hasattr(emitter, "metrics")
+    input_records = [m for m in emitter.metrics if m.metric_name == "InputTokens"]
+    output_records = [m for m in emitter.metrics if m.metric_name == "OutputTokens"]
+    interventions = [m for m in emitter.metrics if m.metric_name == "BedrockGuardrailInterventions"]
+    latencies = [
+        m for m in emitter.metrics
+        if m.metric_name == "OperationDurationMs" and m.dimensions.get("Status") == "error"
+    ]
+
+    assert len(input_records) == 1
+    assert input_records[0].value == 150.0
+    assert len(output_records) == 1
+    assert output_records[0].value == 35.0
+    assert len(interventions) == 1
+    assert len(latencies) == 1
+    assert len(emitter.costs) == 1
+    assert emitter.costs[0].total_tokens == 185
+    assert emitter.costs[0].is_measured is True
