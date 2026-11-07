@@ -56,6 +56,9 @@ class AgentWorkflowStack(cdk.Stack):
         agentic_workflows_enabled: bool,
         admission_table_name: str,
         admission_table_arn: str,
+        s3_vector_index_arn: str | None = None,
+        guardrail_id: str | None = None,
+        guardrail_version: str | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)  # type: ignore[arg-type]
@@ -67,6 +70,31 @@ class AgentWorkflowStack(cdk.Stack):
             "LLM_PROVIDER": "bedrock",
             "ENABLE_AGENTIC_WORKFLOWS": feature_flag,
         }
+        if guardrail_id:
+            common_environment["BEDROCK_GUARDRAIL_ID"] = guardrail_id
+        if guardrail_version:
+            common_environment["BEDROCK_GUARDRAIL_VERSION"] = guardrail_version
+
+        research_env = {
+            **common_environment,
+            "VECTOR_STORE": "s3_vectors" if s3_vector_index_arn else "pgvector",
+            "AWS_AURORA_CLUSTER_ARN": aurora_cluster_arn,
+            "AWS_AURORA_SECRET_ARN": aurora_secret_arn,
+            "DB_NAME": "cloudguard",
+            "BEDROCK_CHAT_MODEL": chat_model_id,
+            "BEDROCK_EMBEDDING_MODEL": embedding_model_id,
+            "RATE_LIMIT_TABLE_NAME": admission_table_name,
+        }
+        if s3_vector_index_arn:
+            research_env["AWS_S3_VECTOR_INDEX_ARN"] = s3_vector_index_arn
+            import re
+            arn_match = re.match(
+                r"^arn:aws:s3vectors:[a-z0-9-]+:[0-9]{12}:bucket/([a-zA-Z0-9.-]+)/index/([a-zA-Z0-9_-]+)$",
+                s3_vector_index_arn,
+            )
+            if arn_match:
+                research_env["AWS_S3_VECTOR_BUCKET_NAME"] = arn_match.group(1)
+                research_env["AWS_S3_VECTOR_INDEX_NAME"] = arn_match.group(2)
 
         self.research_function = lambda_.DockerImageFunction(
             self,
@@ -79,16 +107,7 @@ class AgentWorkflowStack(cdk.Stack):
             timeout=cdk.Duration.minutes(2),
             memory_size=512,
             reserved_concurrent_executions=2,
-            environment={
-                **common_environment,
-                "VECTOR_STORE": "pgvector",
-                "AWS_AURORA_CLUSTER_ARN": aurora_cluster_arn,
-                "AWS_AURORA_SECRET_ARN": aurora_secret_arn,
-                "DB_NAME": "cloudguard",
-                "BEDROCK_CHAT_MODEL": chat_model_id,
-                "BEDROCK_EMBEDDING_MODEL": embedding_model_id,
-                "RATE_LIMIT_TABLE_NAME": admission_table_name,
-            },
+            environment=research_env,
         )
 
         self.risk_function = lambda_.DockerImageFunction(
@@ -238,6 +257,19 @@ class AgentWorkflowStack(cdk.Stack):
                 resources=[aurora_secret_arn],
             )
         )
+        if s3_vector_index_arn:
+            self.research_function.add_to_role_policy(
+                iam.PolicyStatement(
+                    sid="S3VectorsResearchAccess",
+                    effect=iam.Effect.ALLOW,
+                    actions=[
+                        "s3vectors:GetIndex",
+                        "s3vectors:QueryVectors",
+                        "s3vectors:GetVectors",
+                    ],
+                    resources=[s3_vector_index_arn],
+                )
+            )
 
         self.risk_function.add_to_role_policy(
             iam.PolicyStatement(
@@ -254,6 +286,18 @@ class AgentWorkflowStack(cdk.Stack):
                 resources=[reviewer_model_arn],
             )
         )
+
+        if guardrail_id:
+            guardrail_arn = f"arn:aws:bedrock:{self.region}:{self.account}:guardrail/{guardrail_id}"
+            apply_guardrail_statement = iam.PolicyStatement(
+                sid="BedrockApplyGuardrailAccess",
+                effect=iam.Effect.ALLOW,
+                actions=["bedrock:ApplyGuardrail"],
+                resources=[guardrail_arn],
+            )
+            self.research_function.add_to_role_policy(apply_guardrail_statement)
+            self.risk_function.add_to_role_policy(apply_guardrail_statement)
+            self.reviewer_function.add_to_role_policy(apply_guardrail_statement)
 
         self.approval_creation_function.add_to_role_policy(
             iam.PolicyStatement(

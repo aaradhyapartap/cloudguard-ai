@@ -67,6 +67,9 @@ class AWSSettings(BaseSettings):
     audit_table_name: str = "cloudguard-audit-events"
     aurora_cluster_arn: str | None = None
     aurora_secret_arn: str | None = None
+    s3_vector_index_arn: str | None = None
+    s3_vector_bucket_name: str | None = None
+    s3_vector_index_name: str | None = None
     # Set for LocalStack; leave empty to use real AWS endpoints.
     endpoint_url: str | None = None
 
@@ -329,7 +332,7 @@ class WorkerSettings(BaseSettings):
     log_format: Literal["json", "console"] = "console"
     document_store: Literal["memory", "s3"] = "memory"
     event_publisher: Literal["memory", "eventbridge"] = "memory"
-    vector_store: Literal["memory", "pgvector"] = "memory"
+    vector_store: Literal["memory", "pgvector", "s3_vectors"] = "memory"
     llm_provider: Literal["mock", "recorded", "bedrock"] = "mock"
     rate_limit_table_name: str | None = Field(default=None, min_length=3, max_length=255)
 
@@ -356,7 +359,7 @@ class AgentWorkerSettings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_format: Literal["json", "console"] = "console"
     llm_provider: Literal["mock", "recorded", "bedrock"] = "mock"
-    vector_store: Literal["memory", "pgvector"] = "memory"
+    vector_store: Literal["memory", "pgvector", "s3_vectors"] = "memory"
     rate_limit_table_name: str | None = Field(default=None, min_length=3, max_length=255)
 
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)

@@ -21,16 +21,20 @@ from __future__ import annotations
 import os
 
 import aws_cdk as cdk
-
 from stacks.agent_workflow_stack import AgentWorkflowStack
 from stacks.identity_stack import IdentityStack
 from stacks.ingestion_stack import IngestionStack
 from stacks.observability_stack import ObservabilityStack
+from stacks.oidc_stack import GitHubOIDCStack
 from stacks.rate_limit_stack import RateLimitStack
 
 app = cdk.App()
 
-environment_name = app.node.try_get_context("env") or "dev"
+environment_name = (
+    app.node.try_get_context("environment")
+    or app.node.try_get_context("env")
+    or "dev"
+)
 env = cdk.Environment(
     account=os.getenv("CDK_DEFAULT_ACCOUNT"),
     region=os.getenv("CDK_DEFAULT_REGION", "us-east-1"),
@@ -67,7 +71,7 @@ rate_limits = RateLimitStack(
 #    - Plain `cdk deploy` and `cdk synth` without real ARNs will FAIL fast.
 #    - Example deployment:
 #        cdk deploy -c aurora_cluster_arn=arn:aws:rds:us-east-1:123456789012:cluster:cloudguard \
-#                   -c aurora_secret_arn=arn:aws:secretsmanager:us-east-1:123456789012:secret:cloudguard
+#                   -c aurora_secret_arn=arn:aws:secretsmanager:us-east-1:123456789012:secret:db
 #
 # 2. EXPLICIT OFFLINE SYNTHESIS / TESTING MODE:
 #    - For credential-free local template rendering and unit testing, placeholder
@@ -105,15 +109,19 @@ allow_placeholders = is_offline_synth and not is_production_like
 if not allow_placeholders:
     if not raw_cluster_arn or "placeholder" in raw_cluster_arn:
         raise ValueError(
-            f"CloudGuard synthesis/deployment for environment '{environment_name}' requires a real 'aurora_cluster_arn' "
-            "context parameter (e.g. cdk deploy -c aurora_cluster_arn=arn:aws:rds:...).\n"
-            "For credential-free local synthesis/testing, explicitly pass -c offline_synth=true or set CDK_OFFLINE_SYNTH=1."
+            f"CloudGuard synthesis/deployment for environment '{environment_name}' "
+            "requires a real 'aurora_cluster_arn' context parameter "
+            "(e.g. cdk deploy -c aurora_cluster_arn=arn:aws:rds:...).\n"
+            "For credential-free local synthesis/testing, explicitly pass "
+            "-c offline_synth=true or set CDK_OFFLINE_SYNTH=1."
         )
     if not raw_secret_arn or "placeholder" in raw_secret_arn:
         raise ValueError(
-            f"CloudGuard synthesis/deployment for environment '{environment_name}' requires a real 'aurora_secret_arn' "
-            "context parameter (e.g. cdk deploy -c aurora_secret_arn=arn:aws:secretsmanager:...).\n"
-            "For credential-free local synthesis/testing, explicitly pass -c offline_synth=true or set CDK_OFFLINE_SYNTH=1."
+            f"CloudGuard synthesis/deployment for environment '{environment_name}' "
+            "requires a real 'aurora_secret_arn' context parameter "
+            "(e.g. cdk deploy -c aurora_secret_arn=arn:aws:secretsmanager:...).\n"
+            "For credential-free local synthesis/testing, explicitly pass "
+            "-c offline_synth=true or set CDK_OFFLINE_SYNTH=1."
         )
 
 aurora_cluster_arn = (
@@ -152,6 +160,36 @@ agentic_workflows_enabled = str(agentic_workflows_value).lower() in (
     "yes",
 )
 
+s3_vector_bucket_name = (
+    app.node.try_get_context("s3_vector_bucket_name")
+    or os.getenv("S3_VECTOR_BUCKET_NAME")
+)
+s3_vector_index_name = (
+    app.node.try_get_context("s3_vector_index_name")
+    or os.getenv("S3_VECTOR_INDEX_NAME")
+)
+s3_vector_index_arn = (
+    app.node.try_get_context("s3_vector_index_arn")
+    or os.getenv("S3_VECTOR_INDEX_ARN")
+    or (
+        f"arn:aws:s3vectors:{env.region}:{env.account}:bucket/{s3_vector_bucket_name}/index/{s3_vector_index_name}"
+        if s3_vector_bucket_name and s3_vector_index_name
+        else None
+    )
+)
+
+raw_guardrail_id = (
+    app.node.try_get_context("bedrock_guardrail_id")
+    or os.getenv("BEDROCK_GUARDRAIL_ID")
+)
+raw_guardrail_version = (
+    app.node.try_get_context("bedrock_guardrail_version")
+    or os.getenv("BEDROCK_GUARDRAIL_VERSION")
+)
+
+guardrail_id = raw_guardrail_id
+guardrail_version = raw_guardrail_version
+
 ingestion = IngestionStack(
     app,
     f"CloudGuardIngestion-{environment_name}",
@@ -161,6 +199,7 @@ ingestion = IngestionStack(
     event_bus_name=event_bus_name,
     admission_table_name=rate_limits.table.table_name,
     admission_table_arn=rate_limits.table.table_arn,
+    s3_vector_index_arn=s3_vector_index_arn,
     env=env,
     description="S3 document bucket, Step Functions ingestion workflow, and processing Lambda",
 )
@@ -177,6 +216,9 @@ agent_workflow = AgentWorkflowStack(
     agentic_workflows_enabled=agentic_workflows_enabled,
     admission_table_name=rate_limits.table.table_name,
     admission_table_arn=rate_limits.table.table_arn,
+    s3_vector_index_arn=s3_vector_index_arn,
+    guardrail_id=guardrail_id,
+    guardrail_version=guardrail_version,
     env=env,
     description="Deterministic Phase 6 Research, Risk, and Reviewer agent workflow",
 )
@@ -196,6 +238,37 @@ observability = ObservabilityStack(
     reviewer_function=agent_workflow.reviewer_function,
     env=env,
     description="Phase 10 CloudWatch operational dashboard and failure alarms",
+)
+
+github_owner = (
+    app.node.try_get_context("github_owner")
+    or os.getenv("GITHUB_OWNER", "aaradhyapartap")
+)
+github_repo = (
+    app.node.try_get_context("github_repo")
+    or os.getenv("GITHUB_REPO", "cloudguard-ai")
+)
+existing_oidc_arn = (
+    app.node.try_get_context("github_oidc_provider_arn")
+    or os.getenv("GITHUB_OIDC_PROVIDER_ARN")
+)
+cdk_qualifier = (
+    app.node.try_get_context("cdk_qualifier")
+    or os.getenv("CDK_QUALIFIER", "hnb659fds")
+)
+
+oidc = GitHubOIDCStack(
+    app,
+    f"CloudGuardOIDC-{environment_name}",
+    environment_name=environment_name,
+    github_owner=github_owner,
+    github_repo=github_repo,
+    cdk_qualifier=cdk_qualifier,
+    existing_provider_arn=existing_oidc_arn,
+    env=env,
+    description=(
+        "GitHub Actions OIDC deployment provider and least-privilege role for CloudGuard AI"
+    ),
 )
 
 # Tag everything. Untagged resources are how a student account quietly grows a

@@ -41,9 +41,41 @@ def test_unimplemented_adapter_names_the_phase_that_adds_it() -> None:
         build_container(Settings(llm_provider="recorded"))
 
 
-def test_s3_vectors_is_deferred_to_phase_11() -> None:
-    with pytest.raises(AdapterNotAvailableError, match="Phase 11"):
+def test_s3_vectors_requires_bucket_and_index_name() -> None:
+    with pytest.raises(
+        ValueError,
+        match="AWS_S3_VECTOR_INDEX_ARN or both AWS_S3_VECTOR_BUCKET_NAME",
+    ):
         build_container(Settings(vector_store="s3_vectors"))
+
+
+def test_s3_vectors_binds_s3_vector_store_when_configured() -> None:
+    from app.adapters.aws.s3_vector_store import S3VectorStore
+
+    # Configured with bucket and index name
+    settings = Settings(
+        vector_store="s3_vectors",
+        aws={
+            "s3_vector_bucket_name": "test-vector-bucket",
+            "s3_vector_index_name": "test-index",
+        },
+    )
+    container = build_container(settings)
+    assert isinstance(container.vectors, S3VectorStore)
+
+    # Configured with index ARN
+    arn = (
+        "arn:aws:s3vectors:us-east-1:123456789012:"
+        "bucket/test-bucket/index/test-index"
+    )
+    arn_settings = Settings(
+        vector_store="s3_vectors",
+        aws={
+            "s3_vector_index_arn": arn,
+        },
+    )
+    arn_container = build_container(arn_settings)
+    assert isinstance(arn_container.vectors, S3VectorStore)
 
 
 def test_deployed_container_binds_bedrock_llm_and_embeddings() -> None:
