@@ -1,8 +1,8 @@
 # CloudGuard AI Threat Model
 
-- **Version:** 1.1
-- **Review date:** 2026-09-08
-- **Scope baseline:** Phase 8.1 commit `9e0197c` plus Phase 8.2 model-boundary changes
+- **Version:** 1.2
+- **Review date:** 2026-11-06
+- **Scope baseline:** Phases 1–11 committed through `a318c0c45c70db857dc727061c66ad701b164d5e` (`phase-11-devops`) plus Phase 12 documentation reconciliation
 - **Method:** asset and trust-boundary analysis with a qualitative likelihood/impact register
 
 ## 1. Purpose and scope
@@ -117,8 +117,10 @@ even after the gateway control is added.
 5. Retrieval uses server-derived organization and clearance filters before content
    enters an API response or model context.
 
-Upload byte limits, archive/decompression protection, malware scanning, and
-instruction-pattern quarantine are not yet implemented.
+Per-document upload byte, PDF page, extracted character, and chunk budgets are
+enforced in application code (`docs/security/INGESTION_BUDGETS.md`). Storage-side
+S3 upload conditions, archive/decompression sandboxing, malware scanning, and
+automated instruction-pattern quarantine remain residual/deployment items.
 
 ### 6.3 RAG and agents
 
@@ -134,7 +136,8 @@ path uses a fresh nonce to frame user and retrieved text separately from applica
 policy and trusted identifiers. Bedrock Guardrail intervention metadata fails closed,
 and strict schemas and membership checks reject unknown evidence, control, source,
 and tool identifiers. The adversarial corpus exercises authority escalation attempts.
-PII classification and minimization remain Phase 8.3 deliverables.
+Bounded sensitive-data pattern detection minimizes model-facing generation/embedding
+inputs and rejects detected sensitive model output (`docs/security/DATA_HANDLING.md`).
 
 ### 6.4 Human approval and execution
 
@@ -163,9 +166,9 @@ the phase must add a control before production use.
 | CG-01 | Forged, expired, wrong-audience, wrong-issuer, or wrong-use token | Medium | High | Signature, issuer, audience, expiry, not-before, algorithm, key rotation, and `token_use` checks | Controlled; add API Gateway authorizer in Phase 11 without removing application verification. |
 | CG-02 | Role escalation through unknown or multiple groups | Medium | High | Exactly one recognized role; ambiguity and missing roles fail closed; central matrix | Controlled; matrix remains a blocking regression. |
 | CG-03 | Forged tenant, actor, clearance, approver, or task-token fields | High | High | Immutable `Principal`, `extra="forbid"`, server-derived authority, narrow worker models | Controlled; retain negative-contract tests. |
-| CG-04 | Cross-tenant SQL caused by a missing application predicate | Medium | High | Explicit tenant parameters plus forced PostgreSQL RLS, `NOBYPASSRLS` runtime role, and migration `0012` exact table grants | Controlled for current tables; every new tenant table requires real PostgreSQL RLS and privilege tests. |
-| CG-05 | Retrieval leaks data above caller clearance or from another tenant | Medium | High | Server-derived filter, vector SQL tenant predicate, RLS, integration tests | Controlled; adversarial cross-tenant corpus remains Phase 8.5. |
-| CG-06 | Malicious or oversized document exhausts storage, parser, memory, embedding, or cost | High | High | Short presign TTL, type quarantine, encrypted-PDF quarantine, bounded text chunks | Open: enforce registered/actual size, page/text/chunk quotas, parser timeouts, and upload rate limits in Phase 8.3/8.4. |
+| CG-04 | Cross-tenant SQL caused by a missing application predicate | Medium | High | Explicit tenant parameters plus forced PostgreSQL RLS, `NOBYPASSRLS` runtime role, and migration `0012`/`0013` exact table grants | Controlled for current tables; every new tenant table requires real PostgreSQL RLS and privilege tests. |
+| CG-05 | Retrieval leaks data above caller clearance or from another tenant | Medium | High | Server-derived filter, vector SQL tenant predicate, RLS, S3 Vectors metadata validation/post-filtering, integration tests, and Phase 8.5/9 adversarial cross-tenant corpus | Controlled and verified by blocking security regressions and evaluation gates. |
+| CG-06 | Malicious or oversized document exhausts storage, parser, memory, embedding, or cost | High | High | Short presign TTL, type quarantine, encrypted-PDF quarantine, centralized per-document upload byte/page/char/chunk budgets (`INGESTION_BUDGETS.md`), upload rate limits, and worker ingestion admission (`WORKER_ADMISSION.md`) | Partial: application-level ingestion budgets and worker admission are enforced; storage-side S3 conditions, parser sandboxing/timeouts, and malware scanning remain open. |
 | CG-07 | Document or user prompt injection changes model behavior | High | High | Shared nonce-framed isolation, bounded context, Bedrock Guardrail intervention handling, deterministic tools/citations, adversarial corpus | Controlled for identity, tenant, clearance, tool, approval, write, and score authority; adversarial text may still influence non-authoritative prose. |
 | CG-08 | Model invokes a write/admin/unknown tool or exceeds its budget | Medium | High | Enum/schema validation, per-agent static allowlists, original `Principal`, bounded budget; Risk/Reviewer have no tools | Controlled for current tools and covered by the shared adversarial corpus. |
 | CG-09 | Model invents evidence, source labels, document IDs, or policy IDs | High | High | Application-owned source maps, trusted-ID membership checks, strict output schemas, non-empty explicit control scopes | Controlled, including omitted-scope invented-control and RAG invented-source regressions. |

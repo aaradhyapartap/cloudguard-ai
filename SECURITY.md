@@ -4,10 +4,11 @@ CloudGuard AI handles tenant-scoped compliance documents, model context, risk
 records, and human approval decisions. Security controls are part of the product
 contract, not optional deployment guidance.
 
-This document describes the repository at the start of Phase 8. It distinguishes
-controls that are enforced in code from controls still scheduled for later Phase 8
-work. The detailed analysis is in [the threat model](docs/THREAT_MODEL.md), and the
-current role and route grants are in the
+This document describes the repository through Phase 12 (`phase-12-polish`). It
+distinguishes controls that are enforced in repository code and CI from external
+cloud prerequisites and target infrastructure not yet provisioned. The detailed
+analysis is in [the threat model](docs/THREAT_MODEL.md), and the current role and
+route grants are in the
 [authorization matrix](docs/security/AUTHORIZATION_MATRIX.md).
 
 ## Reporting a vulnerability

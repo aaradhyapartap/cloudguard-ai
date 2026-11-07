@@ -1,5 +1,7 @@
 # Phase 10: Observability Handoff
 
+> **Historical Pre-Commit Checkpoint Notice:** This document records the pre-commit review checkpoint for Phase 10. Phase 10 was subsequently committed (`126d3b06e9521442534ac245397453e9eadcd536` + `.gitleaksignore` follow-up `4d7aa9c5b0f68d1858d757484e4df2f7057120e1`) and verified in GitHub Actions CI on branch `phase-10-observability` (Draft PR #3). For current repository status, see [`current-task.md`](current-task.md) and [`phase12-handoff.md`](phase12-handoff.md).
+
 ## 1. Branch & Checkpoint Status
 
 - **Repository Root:** `D:\cloudguard-ai\cloudguard-ai-phase2\cloudguard-ai`

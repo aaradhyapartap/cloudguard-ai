@@ -1,6 +1,21 @@
 # Current Task
 
-Phase 8 - Security Hardening
+Phase 12 — Polish & Handoff (`phase-12-polish`)
+
+- **Active Branch:** `phase-12-polish`
+- **Base Commit (`phase-11-devops` HEAD):** `a318c0c45c70db857dc727061c66ad701b164d5e`
+- **Active Handoff:** [`docs/development/phase12-handoff.md`](phase12-handoff.md)
+- **Published Stacked PR Chain (Committed & CI-Verified on `origin`):**
+  1. **PR #1 (`phase-8-security` → `main`):** `00f38ece21e9418eace66a7fb63b449a9f35dd2d`
+  2. **PR #2 (`phase-9-evaluation` → `phase-8-security`):** `deb19cfe9edbcbf7100313000ca4d20425444e6c`
+  3. **PR #3 (`phase-10-observability` → `phase-9-evaluation`):** `4d7aa9c5b0f68d1858d757484e4df2f7057120e1`
+  4. **PR #4 (`phase-11-devops` → `phase-10-observability`):** `a318c0c45c70db857dc727061c66ad701b164d5e` (CI Run `42349837636`: all 4 jobs `success`)
+
+> **Historical Section Note:** The Phase 8–11 sections below retain the chronological slice notes from their respective development phases. Phases 8–11 are now committed and verified in GitHub Actions CI on their stacked branches above; only the Phase 12 documentation changes on `phase-12-polish` remain unstaged in the working tree for review.
+
+---
+
+## Historical Phase 8 - Security Hardening (Completed on `phase-8-security`, PR #1)
 
 ## Objective
 
@@ -365,14 +380,15 @@ Do not publish a subphase while any required control or regression is failing.
   - Evaluation CLI: Security Gate PASS, Advisory Quality WARN (50 golden + 16 adversarial cases).
   - Frontend vitest: 8 passed.
   - Ruff and mypy: clean across backend (165 files) and infrastructure (15 files).
-- All changes remain unstaged in working tree. Source-review archive generated outside repository.
+- Committed on `phase-10-observability` (`126d3b06e9521442534ac245397453e9eadcd536` + `.gitleaksignore` follow-up `4d7aa9c5b0f68d1858d757484e4df2f7057120e1`, Draft PR #3) and verified in GitHub Actions CI.
 
 ---
 
-## Phase 11 - DevOps (Local Validation & Deployment Hardening)
+## Phase 11 - DevOps (Completed on `phase-11-devops`, PR #4)
 
 **Branch:** `phase-11-devops`
 **Base commit:** `4d7aa9c5b0f68d1858d757484e4df2f7057120e1`
+**Published commits:** `f267aa028df8688dbaac452be4dd0ff3aba928f9` + `a318c0c45c70db857dc727061c66ad701b164d5e` (`fix(ci): declare PyYAML for infrastructure workflow tests`)
 **Handoff:** `docs/development/phase11-handoff.md`
 
 ### Scope & Status:
@@ -384,12 +400,33 @@ Do not publish a subphase while any required control or regression is failing.
 - Implemented opt-in vector store benchmark CLI (`scripts/benchmark_vector_stores.py`) supporting zero-cost offline synthetic fixtures (with true cosine similarity), local PostgreSQL `local_pgvector` mode, and gated live-cloud execution.
 - Added infrastructure CDK unit tests (`infrastructure/tests/test_oidc_stack.py`) asserting OIDC provider, trust policies, least-privilege statements, negative trust regressions, and S3 Vectors grants.
 - Explicitly inventoried the out-of-VPC Lambda / Data API persistence boundary for the FastAPI HTTP application.
-- Complete test suites passed:
+- Declared `PyYAML>=6.0.2,<7` in `infrastructure/requirements.txt` for `.github/workflows/deploy.yml` CDK workflow tests.
+- Complete test suites passed locally and in GitHub Actions CI (Run `42349837636`, all 4 jobs `Backend`, `Infrastructure`, `Frontend`, `Security` succeeded):
   - Backend full suite: 1,392 passed, 0 failed, 1 warning in 49.60s (real PostgreSQL + pgvector under `cloudguard_app` with forced RLS).
   - Focused Phase 11 unit suites: 75 passed in 4.18s (`test_verify_deployment_ci.py`: 33, `test_s3_vector_store.py`: 20, `test_container.py`: 11, `test_benchmark_vector_stores.py`: 11).
-  - Infrastructure pytest suite: 63 passed, 0 failed in 278.59s (including OIDC, deploy workflow scoping, negative trust, scoped IAM, S3 Vectors, and Bedrock Guardrail tests).
+  - Infrastructure pytest suite: 63 passed, 0 failed (including OIDC, deploy workflow scoping, negative trust, scoped IAM, S3 Vectors, and Bedrock Guardrail tests).
   - Offline CDK synthesis: successfully synthesized all 6 stacks.
   - Benchmark CLI: zero-cost synthetic fixture passed (100% recall); `local_pgvector` mode passed with unique IDs, collision checks, owned committed tracking, and scoped cleanup; live-cloud gate verified.
   - Ruff and mypy: clean across backend (168 files), infrastructure (18 files), and scripts.
 - Published migrations `0001`–`0013` remain completely untouched.
-- All Phase 11 changes remain unstaged in the local working tree.
+
+---
+
+## Phase 12 - Polish & Handoff (Active on `phase-12-polish`)
+
+- **Branch:** `phase-12-polish`
+- **Base commit:** `a318c0c45c70db857dc727061c66ad701b164d5e` (`phase-11-devops` HEAD)
+- **Handoff:** [`docs/development/phase12-handoff.md`](phase12-handoff.md)
+
+### Scope & Deliverables:
+1. **Reconciled `README.md` & Setup Instructions:** Updated `README.md` from its Phase 8 snapshot to reflect the complete Phase 1–11 codebase (`17` domain ports, `6` CDK stacks, `1,392` backend tests, `63` CDK tests, `8` frontend Vitest tests, `108` security regressions, Alembic migrations `0001`–`0013`, and Phase 0–12 roadmap completion).
+2. **Reproducible Commands Documented:** Documented end-to-end local startup (`scripts/local_setup.sh`, `Makefile`, and Windows PowerShell equivalents), PostgreSQL `cloudguard_app` (`NOBYPASSRLS`) role provisioning, Alembic migration (`0001`–`0013`) and synthetic seeding (`python scripts/seed_data.py`), backend/frontend startup, unit/DB/security/CDK test execution, fixture evaluation CLI (`scripts/run_evals.py`), and vector benchmark CLI (`scripts/benchmark_vector_stores.py`).
+3. **Updated Architecture Diagrams:** Updated the Mermaid architecture diagrams in `README.md` and `docs/architecture/00-phase0-architecture.md` (§O.3) to explicitly distinguish:
+   - **Implemented & Verified Local/CI Paths** (Next.js SPA, FastAPI over TCP `asyncpg`, PostgreSQL 16 + `pgvector` with forced RLS and canonical `approval_audit_events`, fixture AI providers, local workflows),
+   - **Implemented CDK & Deployed-Worker Designs** (`CloudGuardIdentity`, `CloudGuardRateLimits`, `CloudGuardIngestion`, `CloudGuardAgentWorkflow`, `CloudGuardObservability`, `CloudGuardOIDC`, out-of-VPC worker Lambdas over RDS Data API, `BedrockLLMProvider`, `S3VectorStore`), and
+   - **Unprovisioned Target / External Prerequisites** (CloudFront/WAF/API Gateway, FastAPI HTTP deployment target respecting the `asyncpg` TCP vs. Data API boundary, external Aurora Serverless v2 cluster, external Bedrock Guardrail resource, customer-managed KMS keys, and unimplemented general DynamoDB `AuditEvent`/`AgentExecution` subsystem).
+4. **Synthetic Demo Walkthrough (`docs/DEMO_WALKTHROUGH.md`):** Created a concise, copy-pasteable walkthrough using only synthetic tenants (`Acme Manufacturing`, `Globex Industrial`) and synthetic accounts (`analyst@acme.test`, `manager@acme.test`, `admin@acme.test`, `analyst@globex.test`).
+5. **ADR Consistency Review (`docs/adr/`):** Reconciled `docs/adr/README.md`, `ADR-0002`, `ADR-0008`, `ADR-0013`, and `ADR-0015` with Phase 8–11 implementations while preserving all accepted decisions.
+6. **Evidence-Backed Interview Notes & Resume Bullets (`docs/INTERVIEW_NOTES.md`):** Authored tailored resume bullets and technical Q&A backed strictly by verifiable repository metrics and file citations without inventing production adoption, live model quality, cost savings, or live deployment.
+7. **Deployment Prerequisites, Scanner Exceptions & Stacked PRs (`docs/development/phase12-handoff.md`):** Documented external AWS/GitHub prerequisites, `.trivyignore.yaml` expiry (`2026-12-01` for `CVE-2026-111943` on `usr/local/bin/aws-lambda-rie`), `.gitleaksignore` synthetic test fixture allowlists, and the sequential merge order for stacked PRs #1–#4.
+8. **Working Tree Status:** All Phase 12 documentation updates remain unstaged on `phase-12-polish` for review; published migrations `0001`–`0013` and stacked PRs #1–#4 are untouched.

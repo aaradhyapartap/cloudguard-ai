@@ -12,15 +12,14 @@ Do not silently replace accepted architectural decisions.
 
 ## Current phase
 
-Current implementation phase: Phase 8 - Security Hardening.
+Current implementation phase: Phase 12 - Polish & Handoff.
 
-Phases 1-7 are complete. Phase 8 starts from published commit
-`fb9523064cf9b1b7b22d9427026d2b279dda67d7` on `phase-8-security`.
+Phases 1-11 are implemented in code, committed, and verified in GitHub Actions CI
+across the stacked branch chain through `a318c0c45c70db857dc727061c66ad701b164d5e`
+on `phase-11-devops`. Branch `phase-12-polish` starts from that exact commit.
 
-Work one coherent Phase 8 subphase at a time. Do not reopen Phase 7 feature
-development unless a real defect is found. See
-`docs/development/current-task.md` for the active security plan and carry-forward
-items.
+See `docs/development/current-task.md` and `docs/development/phase12-handoff.md`
+for the active status, stacked PR chain, and deployment prerequisites.
 
 ## Architecture constraints
 
@@ -146,22 +145,25 @@ Do not commit if any required validation fails.
 - Do not commit generated secrets, .env files, caches, build artifacts, or temporary extraction directories.
 - Do not push if tests are failing.
 
-## Completed checkpoint through Phase 7
+## Completed checkpoint through Phase 11
 
-1. Authenticated Principal, centralized RBAC, and tenant RLS.
-2. Document ingestion, pgvector retrieval, and deterministic citations.
+1. Authenticated Principal, centralized RBAC, and tenant RLS (`FORCE ROW LEVEL SECURITY` under `NOBYPASSRLS` role `cloudguard_app`).
+2. Document ingestion, `pgvector` and `S3VectorStore` retrieval, and deterministic citations.
 3. Deterministic compliance/risk scoring with bounded model proposals.
 4. Fixed Research -> Risk -> Reviewer workflow and fail-closed tool registry.
-5. Genuine Manager approval pause, internal callback recovery, immutable approval
-   audit, and one bounded approved action.
+5. Genuine Manager approval pause, internal callback recovery, immutable PostgreSQL approval audit, and one bounded approved action (`create_security_review`).
+6. Security hardening: threat model, per-request nonce prompt framing, Bedrock Guardrail fail-closed intervention handling, bounded PII minimization, central API rate admission, shared tenant worker-step admission (`WorkAdmission`), and 109 blocking security regression tests (`94` service/route/contract + `6` callback race + `9` PostgreSQL RLS/catalog).
+7. Reproducible AI & security evaluation harness (`50` golden + `16` adversarial cases, `scripts/run_evals.py`) and `/analytics` UI.
+8. Privacy-safe CloudWatch EMF observability (`CloudWatchEMFTelemetryEmitter`), separated model-call vs. user-query cost accounting, and `ObservabilityStack`.
+9. Keyless GitHub OIDC deployment stack (`GitHubOIDCStack`), manual protected `.github/workflows/deploy.yml` with fail-closed CI provenance check (`scripts/verify_deployment_ci.py`), and vector store benchmark CLI (`scripts/benchmark_vector_stores.py`).
 
-## Phase 8 priorities
+## Phase 12 priorities
 
-1. Threat model and security baseline.
-2. Prompt-injection defenses and Bedrock Guardrails.
-3. PII, context, output, and logging protections.
-4. Central rate limiting, ingestion bounds, and abuse protection.
-5. Blocking security regression and CI gates.
+1. Reconcile `README.md` and setup instructions against actual code.
+2. Document reproducible local startup, migration/seed, test, evaluation, and benchmark commands.
+3. Distinguish implemented local paths, deployed-worker designs, and unprovisioned infrastructure in architecture diagrams.
+4. Provide a synthetic-only demo walkthrough (`docs/DEMO_WALKTHROUGH.md`) and evidence-backed interview notes (`docs/INTERVIEW_NOTES.md`).
+5. Document deployment prerequisites, scanner-exception expiry, and stacked PR dependencies in `docs/development/phase12-handoff.md`.
 
 ## Working style for coding agents
 

@@ -1,4 +1,4 @@
-﻿# ADR-0008: Lambda outside VPC via Aurora Data API
+# ADR-0008: Lambda outside VPC via Aurora Data API
 
 - **Status:** accepted
 - **Date:** 2026-08-29
@@ -47,6 +47,18 @@ Phase 3 ingestion orchestration must not deploy the current asyncpg-backed
 `tenant_session()` inside an out-of-VPC Lambda. The deployed ingestion path will
 use Step Functions and a Data API-backed persistence boundary when database
 access is required.
+
+Through Phase 11, all deployed background workers (`deployed_document_worker.py`,
+`deployed_research_agent_worker.py`, `deployed_risk_agent_worker.py`,
+`deployed_reviewer_agent_worker.py`, `deployed_approval_creation_worker.py`,
+`deployed_approval_callback_recovery_worker.py`, and
+`deployed_approved_action_execution_worker.py`) use Aurora Data API adapters
+(`backend/app/adapters/aws/`) and are verified by `.github/workflows/deploy.yml`
+to synthesize with zero `VpcConfig` attachments. By contrast, the synchronous
+FastAPI HTTP routes (`backend/app/api/v1/`) continue to use `asyncpg` TCP
+sessions (`tenant_session()`); deploying the unadapted HTTP API into an
+out-of-VPC Lambda remains prohibited until either an HTTP Data API persistence
+boundary or an in-VPC compute target is added.
 
 ## Consequences
 
