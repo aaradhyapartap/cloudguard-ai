@@ -267,3 +267,61 @@ def test_execution_lambda_has_scoped_aurora_permissions(
 
     # Workflow-resume authority belongs only to callback recovery.
     assert "states:SendTaskSuccess" not in serialized
+
+
+def test_agent_workflow_synthesizes_guardrail_environment_and_policy() -> None:
+    """When Guardrail ID/version are configured, workers must receive them and ApplyGuardrail IAM permission."""
+    import aws_cdk as cdk
+    from stacks.agent_workflow_stack import AgentWorkflowStack
+
+    app = cdk.App()
+    stack = AgentWorkflowStack(
+        app,
+        "TestProdAgentWorkflow",
+        environment_name="prod",
+        aurora_cluster_arn="arn:aws:rds:us-east-1:123456789012:cluster:prod-cluster",
+        aurora_secret_arn="arn:aws:secretsmanager:us-east-1:123456789012:secret:prod-secret",
+        chat_model_id="anthropic.claude-haiku-4-5-20251001-v1:0",
+        reviewer_model_id="amazon.nova-pro-v1:0",
+        embedding_model_id="amazon.titan-embed-text-v2:0",
+        agentic_workflows_enabled=True,
+        admission_table_name="prod-admission",
+        admission_table_arn="arn:aws:dynamodb:us-east-1:123456789012:table/prod-admission",
+        guardrail_id="prod-guardrail-xyz",
+        guardrail_version="3",
+        env=cdk.Environment(account="123456789012", region="us-east-1"),
+    )
+    template = assertions.Template.from_stack(stack)
+    template_json = template.to_json()
+
+    # Verify worker environments have Guardrail ID and Version
+    for cmd in (
+        "app.deployed_research_agent_worker.handler",
+        "app.deployed_risk_agent_worker.handler",
+        "app.deployed_reviewer_agent_worker.handler",
+    ):
+        template.has_resource_properties(
+            "AWS::Lambda::Function",
+            {
+                "PackageType": "Image",
+                "ImageConfig": {"Command": [cmd]},
+                "Environment": {
+                    "Variables": assertions.Match.object_like(
+                        {
+                            "BEDROCK_GUARDRAIL_ID": "prod-guardrail-xyz",
+                            "BEDROCK_GUARDRAIL_VERSION": "3",
+                        }
+                    )
+                },
+            },
+        )
+
+    # Verify IAM policies contain bedrock:ApplyGuardrail
+    all_policies = [
+        p.get("Properties", {}).get("PolicyDocument", {})
+        for p in template_json.get("Resources", {}).values()
+        if p.get("Type") == "AWS::IAM::Policy"
+    ]
+    serialized = json.dumps(all_policies)
+    assert "bedrock:ApplyGuardrail" in serialized
+    assert "arn:aws:bedrock:us-east-1:123456789012:guardrail/prod-guardrail-xyz" in serialized

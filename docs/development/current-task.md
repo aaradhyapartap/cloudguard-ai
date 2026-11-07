@@ -366,3 +366,30 @@ Do not publish a subphase while any required control or regression is failing.
   - Frontend vitest: 8 passed.
   - Ruff and mypy: clean across backend (165 files) and infrastructure (15 files).
 - All changes remain unstaged in working tree. Source-review archive generated outside repository.
+
+---
+
+## Phase 11 - DevOps (Local Validation & Deployment Hardening)
+
+**Branch:** `phase-11-devops`
+**Base commit:** `4d7aa9c5b0f68d1858d757484e4df2f7057120e1`
+**Handoff:** `docs/development/phase11-handoff.md`
+
+### Scope & Status:
+- Created least-privilege GitHub Actions OIDC stack (`GitHubOIDCStack`) enabling keyless deployment via `sts:AssumeRoleWithWebIdentity` strictly scoped to `repo:aaradhyapartap/cloudguard-ai:environment:{environment_name}` and audience `sts.amazonaws.com`.
+- Bound CDK bootstrap role access to explicit qualifier `hnb659fds` without wildcard `*`.
+- Denied data-plane vector actions (`PutVectors`, `QueryVectors`, `DeleteVectors`) to the deployment role; scoped resource-capable read actions to `cloudguard-*`.
+- Added protected manual deployment workflow (`.github/workflows/deploy.yml`) with `workflow_dispatch`, verified CI requirement on exact commit, explicit stack allowlist validation, safely quoted argument arrays, and required confirmation tokens for production.
+- Implemented Amazon S3 Vectors adapter (`backend/app/adapters/aws/s3_vector_store.py`) implementing the `VectorStore` port contract with strict tenant isolation, confidentiality clearance verification, deterministic key formatting, contradictory ID suppression, nonfinite distance rejection, and foreign-tenant deletion refusal.
+- Implemented opt-in vector store benchmark CLI (`scripts/benchmark_vector_stores.py`) supporting zero-cost offline synthetic fixtures (with true cosine similarity), local PostgreSQL `local_pgvector` mode, and gated live-cloud execution.
+- Added infrastructure CDK unit tests (`infrastructure/tests/test_oidc_stack.py`) asserting OIDC provider, trust policies, least-privilege statements, negative trust regressions, and S3 Vectors grants.
+- Explicitly inventoried the out-of-VPC Lambda / Data API persistence boundary for the FastAPI HTTP application.
+- Complete test suites passed:
+  - Backend full suite: 1,392 passed, 0 failed, 1 warning in 49.60s (real PostgreSQL + pgvector under `cloudguard_app` with forced RLS).
+  - Focused Phase 11 unit suites: 75 passed in 4.18s (`test_verify_deployment_ci.py`: 33, `test_s3_vector_store.py`: 20, `test_container.py`: 11, `test_benchmark_vector_stores.py`: 11).
+  - Infrastructure pytest suite: 63 passed, 0 failed in 278.59s (including OIDC, deploy workflow scoping, negative trust, scoped IAM, S3 Vectors, and Bedrock Guardrail tests).
+  - Offline CDK synthesis: successfully synthesized all 6 stacks.
+  - Benchmark CLI: zero-cost synthetic fixture passed (100% recall); `local_pgvector` mode passed with unique IDs, collision checks, owned committed tracking, and scoped cleanup; live-cloud gate verified.
+  - Ruff and mypy: clean across backend (168 files), infrastructure (18 files), and scripts.
+- Published migrations `0001`–`0013` remain completely untouched.
+- All Phase 11 changes remain unstaged in the local working tree.

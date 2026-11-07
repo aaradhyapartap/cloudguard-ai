@@ -16,16 +16,29 @@ Failed executions are routed to an SQS dead-letter queue.
 
 from __future__ import annotations
 
-
 import aws_cdk as cdk
 from aws_cdk import (
     aws_events as events,
+)
+from aws_cdk import (
     aws_events_targets as events_targets,
+)
+from aws_cdk import (
     aws_iam as iam,
+)
+from aws_cdk import (
     aws_lambda as lambda_,
+)
+from aws_cdk import (
     aws_s3 as s3,
+)
+from aws_cdk import (
     aws_sqs as sqs,
+)
+from aws_cdk import (
     aws_stepfunctions as sfn,
+)
+from aws_cdk import (
     aws_stepfunctions_tasks as sfn_tasks,
 )
 from constructs import Construct
@@ -47,6 +60,7 @@ class IngestionStack(cdk.Stack):
         event_bus_name: str,
         admission_table_name: str,
         admission_table_arn: str,
+        s3_vector_index_arn: str | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)  # type: ignore[arg-type]
@@ -88,6 +102,29 @@ class IngestionStack(cdk.Stack):
         )
 
         # ------------------------------------------------------------------ Lambda
+        processing_env = {
+            "RATE_LIMIT_TABLE_NAME": admission_table_name,
+            "ENVIRONMENT": environment_name,
+            "AWS_AURORA_CLUSTER_ARN": aurora_cluster_arn,
+            "AWS_AURORA_SECRET_ARN": aurora_secret_arn,
+            "DB_NAME": "cloudguard",
+            "DOCUMENT_STORE": "s3",
+            "AWS_DOCUMENTS_BUCKET": self.documents_bucket.bucket_name,
+            "EVENT_PUBLISHER": "eventbridge",
+            "AWS_EVENT_BUS_NAME": self.event_bus.event_bus_name,
+            "VECTOR_STORE": "s3_vectors" if s3_vector_index_arn else "pgvector",
+        }
+        if s3_vector_index_arn:
+            processing_env["AWS_S3_VECTOR_INDEX_ARN"] = s3_vector_index_arn
+            import re
+            arn_match = re.match(
+                r"^arn:aws:s3vectors:[a-z0-9-]+:[0-9]{12}:bucket/([a-zA-Z0-9.-]+)/index/([a-zA-Z0-9_-]+)$",
+                s3_vector_index_arn,
+            )
+            if arn_match:
+                processing_env["AWS_S3_VECTOR_BUCKET_NAME"] = arn_match.group(1)
+                processing_env["AWS_S3_VECTOR_INDEX_NAME"] = arn_match.group(2)
+
         self.processing_function = lambda_.DockerImageFunction(
             self,
             "ProcessingFunction",
@@ -99,17 +136,7 @@ class IngestionStack(cdk.Stack):
             timeout=cdk.Duration.minutes(5),
             reserved_concurrent_executions=2,
             memory_size=512,
-            environment={
-                "RATE_LIMIT_TABLE_NAME": admission_table_name,
-                "ENVIRONMENT": environment_name,
-                "AWS_AURORA_CLUSTER_ARN": aurora_cluster_arn,
-                "AWS_AURORA_SECRET_ARN": aurora_secret_arn,
-                "DB_NAME": "cloudguard",
-                "DOCUMENT_STORE": "s3",
-                "AWS_DOCUMENTS_BUCKET": self.documents_bucket.bucket_name,
-                "EVENT_PUBLISHER": "eventbridge",
-                "AWS_EVENT_BUS_NAME": self.event_bus.event_bus_name,
-            },
+            environment=processing_env,
             # Deliberately NO vpc — ADR-0008.
         )
 
@@ -142,6 +169,23 @@ class IngestionStack(cdk.Stack):
 
         # EventBridge publish access for domain events (scoped to custom event bus ARN)
         self.event_bus.grant_put_events_to(self.processing_function)
+
+        # S3 Vectors permissions if vector index ARN is configured
+        if s3_vector_index_arn:
+            self.processing_function.add_to_role_policy(
+                iam.PolicyStatement(
+                    sid="S3VectorsIngestionAccess",
+                    effect=iam.Effect.ALLOW,
+                    actions=[
+                        "s3vectors:GetIndex",
+                        "s3vectors:PutVectors",
+                        "s3vectors:GetVectors",
+                        "s3vectors:ListVectors",
+                        "s3vectors:DeleteVectors",
+                    ],
+                    resources=[s3_vector_index_arn],
+                )
+            )
 
         # --------------------------------------------------------- Step Functions
         #

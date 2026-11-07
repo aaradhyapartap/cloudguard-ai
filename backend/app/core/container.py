@@ -194,7 +194,23 @@ def _build_vector_store(settings: Settings | WorkerSettings | AgentWorkerSetting
                     endpoint_url=settings.aws.endpoint_url,
                 )
         case "s3_vectors":
-            raise AdapterNotAvailableError("VectorStore", "s3_vectors", "Phase 11")
+            from app.adapters.aws.s3_vector_store import S3VectorStore
+
+            bucket_name = settings.aws.s3_vector_bucket_name
+            index_name = settings.aws.s3_vector_index_name
+            index_arn = settings.aws.s3_vector_index_arn
+            if not index_arn and (not bucket_name or not index_name):
+                raise ValueError(
+                    "AWS_S3_VECTOR_INDEX_ARN or both AWS_S3_VECTOR_BUCKET_NAME and "
+                    "AWS_S3_VECTOR_INDEX_NAME are required when vector_store='s3_vectors'."
+                )
+            return S3VectorStore(
+                index_arn=index_arn,
+                bucket_name=bucket_name,
+                index_name=index_name,
+                region=settings.aws.region,
+                endpoint_url=settings.aws.endpoint_url,
+            )
 
 
 def _build_document_store(settings: Settings | WorkerSettings) -> DocumentStore:
