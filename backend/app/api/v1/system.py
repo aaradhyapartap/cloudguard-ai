@@ -71,6 +71,6 @@ async def system_config(container: ContainerDep) -> SystemConfigResponse:
         document_store=settings.document_store,
         event_publisher=settings.event_publisher,
         chat_model=container.llm.chat_model_id,
-        embedding_model=container.llm.embedding_model_id,
+        embedding_model=container.embeddings.embedding_model_id,
         feature_flags=settings.features.model_dump(),
     )

@@ -14,9 +14,12 @@ from __future__ import annotations
 from enum import StrEnum
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.security.model_budgets import MAX_GENERATION_INPUT_BYTES, MAX_GENERATION_OUTPUT_TOKENS
 
 
 class Environment(StrEnum):
@@ -62,6 +65,8 @@ class AWSSettings(BaseSettings):
     documents_bucket: str = "cloudguard-documents-local"
     event_bus_name: str = "cloudguard-events"
     audit_table_name: str = "cloudguard-audit-events"
+    aurora_cluster_arn: str | None = None
+    aurora_secret_arn: str | None = None
     # Set for LocalStack; leave empty to use real AWS endpoints.
     endpoint_url: str | None = None
 
@@ -82,10 +87,30 @@ class BedrockSettings(BaseSettings):
     embedding_dimensions: int = 1024
     guardrail_id: str | None = None
     guardrail_version: str | None = None
-    max_output_tokens: int = 2048
-    # Hard ceiling on context sent to a model. A runaway retrieval loop is a
-    # billing incident, not just a latency problem.
-    max_input_tokens: int = 32_000
+    max_output_tokens: int = Field(default=2048, ge=1, le=MAX_GENERATION_OUTPUT_TOKENS)
+    max_input_bytes: int = Field(
+        default=MAX_GENERATION_INPUT_BYTES, ge=1, le=MAX_GENERATION_INPUT_BYTES,
+    )
+    # Reserved native-token target, not an enforced tokenizer count. The current
+    # Nova Pro reviewer does not support CountTokens; byte bounds above are enforced.
+    max_input_tokens: int = Field(default=32_000, ge=1, le=32_000)
+
+    @field_validator("guardrail_id", "guardrail_version")
+    @classmethod
+    def _normalize_guardrail_value(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def _guardrail_configuration_is_complete(self) -> BedrockSettings:
+        if bool(self.guardrail_id) != bool(self.guardrail_version):
+            raise ValueError(
+                "BEDROCK_GUARDRAIL_ID and BEDROCK_GUARDRAIL_VERSION "
+                "must be configured together"
+            )
+        return self
 
 
 class CognitoSettings(BaseSettings):
@@ -172,6 +197,8 @@ class Settings(BaseSettings):
     vector_store: Literal["memory", "pgvector", "s3_vectors"] = "memory"
     document_store: Literal["memory", "s3"] = "memory"
     event_publisher: Literal["memory", "eventbridge"] = "memory"
+    # Local uses bounded process memory; every deployed API requires DynamoDB.
+    rate_limit_table_name: str | None = Field(default=None, min_length=3, max_length=255)
 
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     aws: AWSSettings = Field(default_factory=AWSSettings)
@@ -187,6 +214,44 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip().startswith("["):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
+
+    @field_validator("cors_origins")
+    @classmethod
+    def _validate_origins(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("cors_origins must contain at least one exact origin")
+
+        normalized: list[str] = []
+        for origin in value:
+            if origin == "*":
+                raise ValueError("wildcard CORS origins are not permitted")
+
+            parsed = urlsplit(origin)
+            try:
+                port = parsed.port
+            except ValueError as exc:
+                raise ValueError("cors_origins contains an invalid port") from exc
+
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.hostname is None
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path
+                or parsed.query
+                or parsed.fragment
+                or origin != f"{parsed.scheme}://{parsed.netloc}"
+                or any(character.isspace() for character in origin)
+                or port == 0
+            ):
+                raise ValueError(
+                    "cors_origins entries must be exact http(s) origins without "
+                    "credentials, paths, queries, or fragments"
+                )
+            normalized.append(origin)
+
+        return list(dict.fromkeys(normalized))
 
     @field_validator("llm_provider")
     @classmethod
@@ -220,6 +285,17 @@ class Settings(BaseSettings):
                 "identity_provider='cognito' requires COGNITO_USER_POOL_ID "
                 "and COGNITO_CLIENT_ID"
             )
+
+        if self.environment is Environment.PROD and any(
+            urlsplit(origin).scheme != "https" for origin in self.cors_origins
+        ):
+            raise ValueError("prod CORS origins must use https")
+        if self.environment is Environment.PROD and not (
+            self.bedrock.guardrail_id and self.bedrock.guardrail_version
+        ):
+            raise ValueError(
+                "prod Bedrock model generation requires a configured guardrail"
+            )
         return self
 
     @property
@@ -234,7 +310,94 @@ class Settings(BaseSettings):
         return self.environment is not Environment.PROD
 
 
+class WorkerSettings(BaseSettings):
+    """Scoped configuration for background and deployed document-processing workers.
+
+    Workers only need document storage, event publishing, Data API persistence, and
+    logging configuration. They do not run the HTTP API, do not sign or verify JWTs,
+    and must not require Cognito settings.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=(".env", "../.env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    environment: Environment = Environment.LOCAL
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    log_format: Literal["json", "console"] = "console"
+    document_store: Literal["memory", "s3"] = "memory"
+    event_publisher: Literal["memory", "eventbridge"] = "memory"
+    vector_store: Literal["memory", "pgvector"] = "memory"
+    llm_provider: Literal["mock", "recorded", "bedrock"] = "mock"
+    rate_limit_table_name: str | None = Field(default=None, min_length=3, max_length=255)
+
+    database: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    aws: AWSSettings = Field(default_factory=AWSSettings)
+    bedrock: BedrockSettings = Field(default_factory=BedrockSettings)
+
+
+class AgentWorkerSettings(BaseSettings):
+    """Scoped configuration for deployed Phase 6 agent workflow tasks.
+
+    Agent workers consume an already authenticated Principal from trusted workflow
+    state. They therefore need model, retrieval, and feature-gate configuration,
+    but must not require API identity-provider or Cognito configuration.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=(".env", "../.env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    environment: Environment = Environment.LOCAL
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    log_format: Literal["json", "console"] = "console"
+    llm_provider: Literal["mock", "recorded", "bedrock"] = "mock"
+    vector_store: Literal["memory", "pgvector"] = "memory"
+    rate_limit_table_name: str | None = Field(default=None, min_length=3, max_length=255)
+
+    database: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    aws: AWSSettings = Field(default_factory=AWSSettings)
+    bedrock: BedrockSettings = Field(default_factory=BedrockSettings)
+    features: FeatureFlags = Field(default_factory=FeatureFlags)
+
+    @field_validator("llm_provider")
+    @classmethod
+    def _no_test_llm_in_prod(cls, value: str, info: ValidationInfo) -> str:
+        """Production agent workers must use the real Bedrock provider."""
+        if info.data.get("environment") is Environment.PROD and value != "bedrock":
+            raise ValueError(
+                "prod agent workers must use the bedrock LLM provider, not a test double"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _production_guardrail_is_required(self) -> AgentWorkerSettings:
+        if self.environment is Environment.PROD and not (
+            self.bedrock.guardrail_id and self.bedrock.guardrail_version
+        ):
+            raise ValueError(
+                "prod Bedrock model generation requires a configured guardrail"
+            )
+        return self
+
+
 @lru_cache
 def get_settings() -> Settings:
     """Cached so the process parses and validates the environment exactly once."""
     return Settings()
+
+
+@lru_cache
+def get_worker_settings() -> WorkerSettings:
+    """Cached configuration for worker tasks."""
+    return WorkerSettings()
+
+
+@lru_cache
+def get_agent_worker_settings() -> AgentWorkerSettings:
+    """Cached configuration for deployed agent workflow tasks."""
+    return AgentWorkerSettings()

@@ -38,22 +38,12 @@ jobs:
       - name: Lint
         run: cd backend && ruff check .
       - name: Type check
-        run: cd backend && mypy app
-      - name: Migrate
-        run: cd backend && alembic upgrade head
-        env:
-          DB_HOST: localhost
-
-      # Seed the same organizations/users used by local development and
-      # authenticated integration tests.
-      - name: Seed database
-        run: python scripts/seed_data.py
-        env:
-          DB_HOST: localhost
+        run: cd backend && mypy app tests/security
 
       # The POSTGRES_USER created by the service container is a privileged
       # database role. RLS must be tested through an ordinary application role,
-      # otherwise PostgreSQL can bypass row-level policies.
+      # otherwise PostgreSQL can bypass row-level policies. Create the role
+      # before migration so migrations remain the sole owners of table grants.
       - name: Create application database role
         env:
           PGPASSWORD: cloudguard
@@ -78,23 +68,60 @@ jobs:
 
           GRANT CONNECT ON DATABASE cloudguard TO cloudguard_app;
           GRANT USAGE ON SCHEMA public TO cloudguard_app;
-          GRANT SELECT, INSERT, UPDATE, DELETE
-            ON ALL TABLES IN SCHEMA public
-            TO cloudguard_app;
-          GRANT USAGE, SELECT
-            ON ALL SEQUENCES IN SCHEMA public
-            TO cloudguard_app;
           SQL
 
-      # Isolation tests run against real PostgreSQL because Row-Level Security
-      # does not exist in SQLite. They deliberately use the non-superuser role.
-      - name: Test
-        run: cd backend && pytest --cov=app --cov-report=term-missing
+      - name: Migrate
+        run: cd backend && alembic upgrade head
+        env:
+          DB_HOST: localhost
+
+      # Seed the same organizations/users used by local development and
+      # authenticated integration tests through the privileged setup role.
+      - name: Seed database
+        run: python scripts/seed_data.py
+        env:
+          DB_HOST: localhost
+
+      # Dedicated Phase 8.5 security regression gate. REQUIRE_SECURITY_DB_TESTS
+      # fails closed if PostgreSQL security regressions would otherwise skip.
+      - name: Security regressions
+        run: cd backend && pytest tests/security -ra
         env:
           DB_HOST: localhost
           DB_USER: cloudguard_app
           DB_PASSWORD: cloudguard_app
           RUN_DB_TESTS: '1'
+          REQUIRE_SECURITY_DB_TESTS: '1'
+
+      # Isolation tests run against real PostgreSQL because Row-Level Security
+      # does not exist in SQLite. They deliberately use the non-superuser role.
+      - name: Test
+        run: cd backend && pytest -ra --cov=app --cov-report=term-missing
+        env:
+          DB_HOST: localhost
+          DB_USER: cloudguard_app
+          DB_PASSWORD: cloudguard_app
+          RUN_DB_TESTS: '1'
+          REQUIRE_SECURITY_DB_TESTS: '1'
+
+  infrastructure:
+    name: Infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install
+        run: pip install -r infrastructure/requirements.txt pytest mypy
+      - name: Type check
+        run: cd infrastructure && mypy stacks
+      - name: Test
+        run: cd infrastructure && pytest -ra
 
   frontend:
     name: Frontend
@@ -109,6 +136,7 @@ jobs:
       - run: cd frontend && npm ci
       - run: cd frontend && npm run lint
       - run: cd frontend && npm run typecheck
+      - run: cd frontend && npm test
       - run: cd frontend && npm run build
 
   security:
@@ -117,14 +145,90 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }   # gitleaks needs history to scan it
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-      - name: Dependency audit (Python)
-        run: pip install pip-audit && pip-audit -r <(cd backend && pip install -e . --dry-run --quiet 2>/dev/null; echo) || true
       - name: Secret scan
-        uses: gitleaks/gitleaks-action@v2
-        env: { GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}' }
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            if [[ ! "${PR_BASE_SHA}" =~ ^[0-9a-f]{40}$ ]] || [[ ! "${PR_HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Invalid pull_request base/head SHA metadata." >&2
+              exit 1
+            fi
+            git cat-file -e "${PR_BASE_SHA}^{commit}"
+            git cat-file -e "${PR_HEAD_SHA}^{commit}"
+            SCAN_RANGE="${PR_BASE_SHA}..${PR_HEAD_SHA}"
+          else
+            if [[ "${PUSH_BEFORE_SHA}" =~ ^[0-9a-f]{40}$ ]] && [ "${PUSH_BEFORE_SHA}" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2>/dev/null; then
+              SCAN_RANGE="${PUSH_BEFORE_SHA}..${PUSH_AFTER_SHA}"
+            else
+              SCAN_RANGE="${PUSH_AFTER_SHA}"
+            fi
+          fi
+          COMMIT_COUNT="$(git rev-list --count "${SCAN_RANGE}")"
+          echo "Scanning git revision range ${SCAN_RANGE} (${COMMIT_COUNT} commits)"
+          if [ "${COMMIT_COUNT}" -le 0 ]; then
+            echo "Expected at least one commit in scan range ${SCAN_RANGE}." >&2
+            exit 1
+          fi
+          SCAN_LOG="$(mktemp)"
+          trap 'rm -f "${SCAN_LOG}"' EXIT
+          docker run --rm \
+            -e GIT_CONFIG_NOSYSTEM=1 \
+            -e GIT_CONFIG_GLOBAL=/dev/null \
+            -e GIT_CONFIG_COUNT=1 \
+            -e GIT_CONFIG_KEY_0=safe.directory \
+            -e GIT_CONFIG_VALUE_0=/work \
+            -v "${GITHUB_WORKSPACE}:/work:ro" \
+            -w /work \
+            zricethezav/gitleaks:v8.24.3@sha256:e1b35e12a8c6fa8901f060459cfb6b2fc4c484d3afbe3b029733a3bbfab07055 \
+            detect \
+            --source=/work \
+            --redact \
+            --no-color \
+            -v \
+            --exit-code=1 \
+            --log-opts="${SCAN_RANGE}" 2>&1 | tee "${SCAN_LOG}"
+          if grep -Eq '(^| )(ERR|FTL|WRN) |fatal:' "${SCAN_LOG}"; then
+            echo "Gitleaks reported a Git or scanner runtime error/warning." >&2
+            exit 1
+          fi
+          SCANNED_COMMITS="$(sed -nE 's/.*INF ([0-9]+) commits scanned\..*/\1/p' "${SCAN_LOG}" | tail -n 1)"
+          SCANNED_BYTES="$(sed -nE 's/.*INF scanned ~([0-9]+) bytes.*/\1/p' "${SCAN_LOG}" | tail -n 1)"
+          if [ -z "${SCANNED_COMMITS}" ] || [ "${SCANNED_COMMITS}" -le 0 ] || [ -z "${SCANNED_BYTES}" ] || [ "${SCANNED_BYTES}" -le 0 ]; then
+            echo "Unexpected empty secret scan (commits=${SCANNED_COMMITS:-0}, bytes=${SCANNED_BYTES:-0})." >&2
+            exit 1
+          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Dependency audit (Python backend & infrastructure)
+        run: |
+          python -m venv /tmp/audit-backend
+          /tmp/audit-backend/bin/pip install --upgrade pip pip-audit
+          /tmp/audit-backend/bin/pip install ./backend
+          /tmp/audit-backend/bin/pip-audit --desc
+          /tmp/audit-backend/bin/pip-audit -r infrastructure/requirements.txt --desc
       - uses: actions/setup-node@v4
-        with: { node-version: '22' }
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
       - name: Dependency audit (npm)
-        run: cd frontend && npm audit --audit-level=high || true
+        run: cd frontend && npm audit --audit-level=high
+      - name: Build backend container image
+        run: docker build -t cloudguard-backend:ci backend
+      - name: Container vulnerability scan
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          image-ref: 'cloudguard-backend:ci'
+          format: 'table'
+          exit-code: '1'
+          vuln-type: 'os,library'
+          scanners: 'vuln'
+          severity: 'CRITICAL,HIGH'
+          trivyignores: '.trivyignore.yaml'

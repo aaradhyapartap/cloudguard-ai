@@ -1,0 +1,16 @@
+# Narrow, time-bounded, component-scoped container vulnerability exceptions for CloudGuard AI.
+# Do not use blanket ignore-unfixed:true or unscoped CVE entries.
+vulnerabilities:
+  - id: CVE-2026-111943
+    paths:
+      - usr/local/bin/aws-lambda-rie
+    expired_at: 2026-12-01
+    statement: >-
+      Temporary exception for usr/local/bin/aws-lambda-rie (AWS Lambda Runtime
+      Interface Emulator Go binary bundled in upstream base image
+      public.ecr.aws/lambda/python:3.12, compiled with Go 1.26.9; fixed in Go
+      1.26.10 / 1.27.3). aws-lambda-rie is only used for local container
+      emulation and is never executed by the AWS Lambda service in deployed
+      functions. Re-evaluate when AWS publishes an updated
+      public.ecr.aws/lambda/python:3.12 base image or remove aws-lambda-rie in
+      a multi-stage build before 2026-12-01.

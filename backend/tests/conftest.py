@@ -12,7 +12,8 @@ authorization logic do not, and live in ``tests/unit``.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from uuid import UUID, uuid4
 
 import pytest
@@ -21,6 +22,8 @@ from app.core.config import Environment, Settings
 from app.models.enums import Role
 from app.models.principal import Principal
 from fastapi.testclient import TestClient
+from sqlalchemy.engine import URL
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 ORG_A = UUID("11111111-1111-4111-8111-111111111111")
 ORG_B = UUID("22222222-2222-4222-8222-222222222222")
@@ -108,6 +111,32 @@ skip_without_database = pytest.mark.skipif(
     not requires_database(),
     reason="set RUN_DB_TESTS=1 with PostgreSQL running",
 )
+
+
+@asynccontextmanager
+async def database_admin_session() -> AsyncIterator[AsyncSession]:
+    """Test-only control-plane session for prerequisite data and FK checks.
+
+    Runtime integration tests connect through cloudguard_app. Fixtures must not
+    expand that role merely to create organizations/framework definitions or
+    exercise destructive schema behavior that the application never performs.
+    """
+    url = URL.create(
+        "postgresql+asyncpg",
+        username=os.getenv("TEST_DB_ADMIN_USER", "cloudguard"),
+        password=os.getenv("TEST_DB_ADMIN_PASSWORD", "cloudguard"),
+        host=os.getenv("DB_HOST", "localhost"),
+        port=int(os.getenv("DB_PORT", "5432")),
+        database=os.getenv("DB_NAME", "cloudguard"),
+    )
+    engine = create_async_engine(url)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    try:
+        async with factory() as session, session.begin():
+            yield session
+    finally:
+        await engine.dispose()
 
 
 def random_org() -> UUID:

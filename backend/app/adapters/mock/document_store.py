@@ -1,7 +1,7 @@
 """In-memory blob store backed by a dict."""
-
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 from app.core.errors import NotFoundError
@@ -33,8 +33,24 @@ class InMemoryDocumentStore(DocumentStore):
 
     async def get_object(self, *, key: str) -> bytes:
         if key not in self._objects:
-            raise NotFoundError(f"No object at key {key!r}")
+            raise NotFoundError("The stored document does not exist.")
         return self._objects[key][0]
 
     async def put_object(self, *, key: str, body: bytes, content_type: str) -> None:
         self._objects[key] = (body, content_type)
+
+
+
+    async def head_object(self, *, key: str) -> dict[str, Any] | None:
+        stored = self._objects.get(key)
+        if stored is None:
+            return None
+
+        body, content_type = stored
+        return {
+            "size_bytes": len(body),
+            "content_type": content_type,
+        }
+
+    async def delete_object(self, *, key: str) -> None:
+        self._objects.pop(key, None)

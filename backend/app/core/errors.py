@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.core.logging import get_logger
+from app.security.sensitive_data import DeterministicSensitiveDataDetector
 
 logger = get_logger(__name__)
 
@@ -104,6 +105,13 @@ class RateLimitError(AppError):
     status_code = status.HTTP_429_TOO_MANY_REQUESTS
     message = "Too many requests."
 
+    def __init__(
+        self, message: str | None = None, *, retry_after_seconds: int = 60,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        self.retry_after_seconds = max(1, retry_after_seconds)
+        super().__init__(message, details=details)
+
 
 class UpstreamError(AppError):
     code = ErrorCode.UPSTREAM_UNAVAILABLE
@@ -142,9 +150,16 @@ def register_exception_handlers(app: FastAPI) -> None:
             "application_error",
             error_code=exc.code.value,
             status_code=exc.status_code,
-            detail=exc.message,
         )
-        return _render(exc.status_code, exc.code, exc.message, request, exc.details)
+        # Structured details are internal-only unless projected by a specific
+        # handler. Do not reflect arbitrary context dictionaries to clients.
+        message = exc.message
+        if DeterministicSensitiveDataDetector().detect(message):
+            message = type(exc).message
+        response = _render(exc.status_code, exc.code, message, request)
+        if isinstance(exc, RateLimitError):
+            response.headers["Retry-After"] = str(exc.retry_after_seconds)
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def _handle_validation(
@@ -155,14 +170,27 @@ def register_exception_handlers(app: FastAPI) -> None:
             ErrorCode.VALIDATION_FAILED,
             "The request could not be validated.",
             request,
-            {"errors": jsonable_encoder(exc.errors())},
+            {
+                "errors": [
+                    {
+                        "type": "validation_error",
+                        "msg": "Invalid request value.",
+                        "loc": (
+                            [error["loc"][0]]
+                            if error.get("loc")
+                            and error["loc"][0] in {"body", "query", "path", "header", "cookie"}
+                            else []
+                        ),
+                    }
+                    for error in exc.errors()[:50]
+                ]
+            },
         )
 
     @app.exception_handler(Exception)
     async def _handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
-        # Log the detail; return none of it. Stack traces and internal messages
-        # are for operators, not for whoever sent the request.
-        logger.exception("unhandled_exception", exception_type=type(exc).__name__)
+        # Exception messages, chained causes, and traceback locals may be sensitive.
+        logger.error("unhandled_exception", exception_type=type(exc).__name__)
         return _render(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             ErrorCode.INTERNAL_ERROR,

@@ -22,17 +22,30 @@ from dataclasses import dataclass
 
 from app.adapters.cognito.identity import CognitoIdentityProvider
 from app.adapters.local.identity import LocalIdentityProvider
+from app.adapters.local.rate_limit_store import InMemoryRateLimitStore
+from app.adapters.local.work_lease_store import InMemoryWorkLeaseStore
 from app.adapters.mock.document_store import InMemoryDocumentStore
+from app.adapters.mock.embedding import MockEmbeddingProvider
 from app.adapters.mock.event_publisher import InMemoryEventPublisher
 from app.adapters.mock.llm import MockLLMProvider
 from app.adapters.mock.vector_store import InMemoryVectorStore
-from app.core.config import Settings, get_settings
+from app.core.config import (
+    AgentWorkerSettings,
+    Environment,
+    Settings,
+    WorkerSettings,
+    get_agent_worker_settings,
+    get_settings,
+    get_worker_settings,
+)
 from app.core.logging import get_logger
 from app.ports.document_store import DocumentStore
 from app.ports.event_publisher import EventPublisher
 from app.ports.identity_provider import IdentityProvider
-from app.ports.llm_provider import LLMProvider
+from app.ports.llm_provider import EmbeddingProvider, LLMProvider
+from app.ports.rate_limit_store import RateLimitStore
 from app.ports.vector_store import VectorStore
+from app.services.work_admission import WorkAdmission
 
 logger = get_logger(__name__)
 
@@ -54,9 +67,12 @@ class Container:
     settings: Settings
     identity: IdentityProvider
     llm: LLMProvider
+    reviewer_llm: LLMProvider
+    embeddings: EmbeddingProvider
     vectors: VectorStore
     documents: DocumentStore
     events: EventPublisher
+    rate_limits: RateLimitStore
 
 
 def _build_identity(settings: Settings) -> IdentityProvider:
@@ -76,42 +92,160 @@ def _build_identity(settings: Settings) -> IdentityProvider:
                 client_id=settings.cognito.client_id,
                 region=settings.cognito.region,
             )
+        case _:
+            raise ValueError(f"Unknown identity provider: {settings.identity_provider}")
 
 
-def _build_llm(settings: Settings) -> LLMProvider:
+def _build_embeddings(
+    settings: Settings | WorkerSettings | AgentWorkerSettings,
+) -> EmbeddingProvider:
     match settings.llm_provider:
         case "mock":
-            return MockLLMProvider(dimensions=settings.bedrock.embedding_dimensions)
+            return MockEmbeddingProvider(dimensions=settings.bedrock.embedding_dimensions)
+        case "recorded":
+            raise AdapterNotAvailableError("EmbeddingProvider", "recorded", "Phase 4")
+        case "bedrock":
+            from app.adapters.bedrock.embedding import BedrockEmbeddingProvider
+
+            return BedrockEmbeddingProvider(
+                embedding_model_id=settings.bedrock.embedding_model,
+                dimensions=settings.bedrock.embedding_dimensions,
+                region=settings.aws.region,
+                endpoint_url=settings.aws.endpoint_url,
+            )
+
+
+def _build_llm(settings: Settings | AgentWorkerSettings) -> LLMProvider:
+    match settings.llm_provider:
+        case "mock":
+            return MockLLMProvider()
         case "recorded":
             raise AdapterNotAvailableError("LLMProvider", "recorded", "Phase 4")
         case "bedrock":
-            raise AdapterNotAvailableError("LLMProvider", "bedrock", "Phase 4")
+            from app.adapters.bedrock.llm import BedrockLLMProvider
+
+            return BedrockLLMProvider(
+                chat_model_id=settings.bedrock.chat_model,
+                region=settings.aws.region,
+                endpoint_url=settings.aws.endpoint_url,
+                guardrail_id=settings.bedrock.guardrail_id,
+                guardrail_version=settings.bedrock.guardrail_version,
+                max_output_tokens=settings.bedrock.max_output_tokens,
+                max_input_bytes=settings.bedrock.max_input_bytes,
+            )
 
 
-def _build_vector_store(settings: Settings) -> VectorStore:
+def _build_reviewer_llm(settings: Settings | AgentWorkerSettings) -> LLMProvider:
+    """Build the independently configured Reviewer/Judge model provider."""
+    match settings.llm_provider:
+        case "mock":
+            return MockLLMProvider()
+        case "recorded":
+            raise AdapterNotAvailableError("LLMProvider", "recorded", "Phase 4")
+        case "bedrock":
+            from app.adapters.bedrock.llm import BedrockLLMProvider
+
+            return BedrockLLMProvider(
+                chat_model_id=settings.bedrock.judge_model,
+                region=settings.aws.region,
+                endpoint_url=settings.aws.endpoint_url,
+                guardrail_id=settings.bedrock.guardrail_id,
+                guardrail_version=settings.bedrock.guardrail_version,
+                max_output_tokens=settings.bedrock.max_output_tokens,
+                max_input_bytes=settings.bedrock.max_input_bytes,
+            )
+
+
+def _build_vector_store(settings: Settings | WorkerSettings | AgentWorkerSettings) -> VectorStore:
     match settings.vector_store:
         case "memory":
             return InMemoryVectorStore()
         case "pgvector":
-            raise AdapterNotAvailableError("VectorStore", "pgvector", "Phase 4")
+            if settings.environment == Environment.LOCAL:
+                from app.adapters.local.vector_store import SQLAlchemyVectorStore
+
+                return SQLAlchemyVectorStore()
+            else:
+                from app.adapters.aws.vector_store import AuroraDataAPIVectorStore
+
+                cluster_arn = settings.aws.aurora_cluster_arn
+                secret_arn = settings.aws.aurora_secret_arn
+                if not cluster_arn or not secret_arn:
+                    raise ValueError(
+                        "AWS_AURORA_CLUSTER_ARN and AWS_AURORA_SECRET_ARN are "
+                        "required when vector_store='pgvector' in deployed environments."
+                    )
+                return AuroraDataAPIVectorStore(
+                    resource_arn=cluster_arn,
+                    secret_arn=secret_arn,
+                    database=settings.database.name,
+                    region=settings.aws.region,
+                    endpoint_url=settings.aws.endpoint_url,
+                )
         case "s3_vectors":
             raise AdapterNotAvailableError("VectorStore", "s3_vectors", "Phase 11")
 
 
-def _build_document_store(settings: Settings) -> DocumentStore:
+def _build_document_store(settings: Settings | WorkerSettings) -> DocumentStore:
     match settings.document_store:
         case "memory":
             return InMemoryDocumentStore()
         case "s3":
-            raise AdapterNotAvailableError("DocumentStore", "s3", "Phase 3")
+            from app.adapters.aws.document_store import S3DocumentStore
+
+            return S3DocumentStore(
+                bucket=settings.aws.documents_bucket,
+                region=settings.aws.region,
+                endpoint_url=settings.aws.endpoint_url,
+            )
 
 
-def _build_event_publisher(settings: Settings) -> EventPublisher:
+def _build_event_publisher(settings: Settings | WorkerSettings) -> EventPublisher:
     match settings.event_publisher:
         case "memory":
             return InMemoryEventPublisher()
         case "eventbridge":
-            raise AdapterNotAvailableError("EventPublisher", "eventbridge", "Phase 3")
+            from app.adapters.aws.event_publisher import EventBridgePublisher
+
+            return EventBridgePublisher(
+                bus_name=settings.aws.event_bus_name,
+                region=settings.aws.region,
+                endpoint_url=settings.aws.endpoint_url,
+            )
+
+
+def _build_rate_limit_store(
+    settings: Settings | WorkerSettings | AgentWorkerSettings,
+) -> RateLimitStore:
+    if settings.environment is Environment.LOCAL:
+        return InMemoryRateLimitStore()
+    if not settings.rate_limit_table_name or not settings.rate_limit_table_name.strip():
+        raise ValueError("Deployed runtimes require RATE_LIMIT_TABLE_NAME for shared admission.")
+    from app.adapters.aws.rate_limit_store import DynamoDBRateLimitStore
+
+    return DynamoDBRateLimitStore(
+        table_name=settings.rate_limit_table_name,
+        region=settings.aws.region,
+        endpoint_url=settings.aws.endpoint_url,
+    )
+
+
+def build_work_admission(
+    settings: Settings | WorkerSettings | AgentWorkerSettings,
+) -> WorkAdmission:
+    rates = _build_rate_limit_store(settings)
+    if settings.environment is Environment.LOCAL:
+        return WorkAdmission(leases=InMemoryWorkLeaseStore(), rates=rates)
+    from app.adapters.aws.work_lease_store import DynamoDBWorkLeaseStore
+
+    assert settings.rate_limit_table_name is not None
+    return WorkAdmission(
+        leases=DynamoDBWorkLeaseStore(
+            table_name=settings.rate_limit_table_name, region=settings.aws.region,
+            endpoint_url=settings.aws.endpoint_url,
+        ),
+        rates=rates,
+    )
 
 
 def build_container(settings: Settings | None = None) -> Container:
@@ -120,9 +254,12 @@ def build_container(settings: Settings | None = None) -> Container:
         settings=resolved,
         identity=_build_identity(resolved),
         llm=_build_llm(resolved),
+        reviewer_llm=_build_reviewer_llm(resolved),
+        embeddings=_build_embeddings(resolved),
         vectors=_build_vector_store(resolved),
         documents=_build_document_store(resolved),
         events=_build_event_publisher(resolved),
+        rate_limits=_build_rate_limit_store(resolved),
     )
     logger.info(
         "container_built",
@@ -134,3 +271,104 @@ def build_container(settings: Settings | None = None) -> Container:
         event_publisher=resolved.event_publisher,
     )
     return container
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerContainer:
+    """Every dependency the worker layer is allowed to reach for."""
+
+    settings: Settings | WorkerSettings
+    documents: DocumentStore
+    events: EventPublisher
+    vectors: VectorStore
+    embeddings: EmbeddingProvider
+    admission: WorkAdmission
+
+
+def build_worker_container(
+    settings: Settings | WorkerSettings | None = None,
+) -> WorkerContainer:
+    resolved = settings or get_worker_settings()
+    container = WorkerContainer(
+        settings=resolved,
+        documents=_build_document_store(resolved),
+        events=_build_event_publisher(resolved),
+        vectors=_build_vector_store(resolved),
+        embeddings=_build_embeddings(resolved),
+        admission=build_work_admission(resolved),
+    )
+    logger.info(
+        "worker_container_built",
+        environment=resolved.environment.value,
+        document_store=resolved.document_store,
+        event_publisher=resolved.event_publisher,
+        vector_store=resolved.vector_store,
+        embedding_provider=resolved.llm_provider,
+    )
+    return container
+
+@dataclass(frozen=True, slots=True)
+class ResearchAgentWorkerContainer:
+    """Dependencies required only by the deployed Research Agent."""
+
+    settings: AgentWorkerSettings
+    llm: LLMProvider
+    embeddings: EmbeddingProvider
+    vectors: VectorStore
+    admission: WorkAdmission
+
+
+@dataclass(frozen=True, slots=True)
+class RiskAgentWorkerContainer:
+    """Dependencies required only by the deployed Risk Agent."""
+
+    settings: AgentWorkerSettings
+    llm: LLMProvider
+    admission: WorkAdmission
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewerAgentWorkerContainer:
+    """Dependencies required only by the deployed Reviewer Agent."""
+
+    settings: AgentWorkerSettings
+    reviewer_llm: LLMProvider
+    admission: WorkAdmission
+
+
+def build_research_agent_worker_container(
+    settings: AgentWorkerSettings | None = None,
+) -> ResearchAgentWorkerContainer:
+    """Build the least-privilege dependency graph for Research."""
+    resolved = settings or get_agent_worker_settings()
+    return ResearchAgentWorkerContainer(
+        settings=resolved,
+        llm=_build_llm(resolved),
+        embeddings=_build_embeddings(resolved),
+        vectors=_build_vector_store(resolved),
+        admission=build_work_admission(resolved),
+    )
+
+
+def build_risk_agent_worker_container(
+    settings: AgentWorkerSettings | None = None,
+) -> RiskAgentWorkerContainer:
+    """Build the least-privilege dependency graph for Risk."""
+    resolved = settings or get_agent_worker_settings()
+    return RiskAgentWorkerContainer(
+        settings=resolved,
+        llm=_build_llm(resolved),
+        admission=build_work_admission(resolved),
+    )
+
+
+def build_reviewer_agent_worker_container(
+    settings: AgentWorkerSettings | None = None,
+) -> ReviewerAgentWorkerContainer:
+    """Build the least-privilege dependency graph for Reviewer."""
+    resolved = settings or get_agent_worker_settings()
+    return ReviewerAgentWorkerContainer(
+        settings=resolved,
+        reviewer_llm=_build_reviewer_llm(resolved),
+        admission=build_work_admission(resolved),
+    )

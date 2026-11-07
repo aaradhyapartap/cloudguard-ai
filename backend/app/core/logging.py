@@ -21,15 +21,17 @@ request traceable across the whole application.
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
+from collections.abc import Mapping
 from typing import Any
 
 import structlog
 from structlog.contextvars import bind_contextvars, clear_contextvars
 from structlog.typing import EventDict, WrappedLogger
 
-from app.core.config import Settings
+from app.core.config import AgentWorkerSettings, Settings, WorkerSettings
 
 REDACTED = "[redacted]"
 
@@ -48,36 +50,94 @@ SENSITIVE_KEY_FRAGMENTS: tuple[str, ...] = (
     "private_key",
     "access_key",
     "ssn",
+    "email",
+    "filename",
+    "file_name",
+    "storage_key",
+    "s3_key",
+    "presigned",
+    "prompt",
+    "document_content",
+    "document_body",
+    "embedding",
 )
+
+_SENSITIVE_EXACT_KEYS = frozenset({"error", "detail", "exception", "stack", "body"})
+_MAX_REDACTION_DEPTH = 12
+
+
+def _mark_sanitized(
+    _logger: WrappedLogger, _name: str, rendered: object
+) -> tuple[tuple[str], dict[str, Any]]:
+    """Mark only output that has traversed the application processor chain."""
+    if not isinstance(rendered, str):
+        raise TypeError("Expected rendered log text.")
+    return ((rendered,), {"extra": {"_cloudguard_sanitized": True}})
+
+
+class PrivacyLogFilter(logging.Filter):
+    """Discard foreign free text before any formatter invokes getMessage()."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not getattr(record, "_cloudguard_sanitized", False):
+            record.msg = json.dumps({
+                "event": "external_log",
+                "level": logging.getLevelName(record.levelno),
+            })
+            record.args = ()
+        # Never let the standard formatter append traceback/stack text, even if
+        # a caller adds exception state after application rendering.
+        record.exc_info = None
+        record.exc_text = None
+        record.stack_info = None
+        return True
 
 
 def redact_sensitive(
     _logger: WrappedLogger, _name: str, event_dict: EventDict
 ) -> EventDict:
-    """Replace values whose key looks sensitive. Runs on every event."""
+    """Scrub structured application events without rendering opaque objects.
 
-    def _scrub(value: Any, key: str = "") -> Any:
-        lowered = key.lower()
-        if any(fragment in lowered for fragment in SENSITIVE_KEY_FRAGMENTS):
+    Free-text value detection is a separate defense; callers must use static event
+    names and safe identifiers, never exception strings or document text.
+    """
+
+    def _scrub(value: Any, key: str = "", depth: int = 0) -> Any:
+        lowered = key.lower().replace("-", "_")
+        if (
+            depth >= _MAX_REDACTION_DEPTH
+            or lowered in _SENSITIVE_EXACT_KEYS
+            or any(fragment in lowered for fragment in SENSITIVE_KEY_FRAGMENTS)
+        ):
             return REDACTED
-        if isinstance(value, dict):
-            return {k: _scrub(v, k) for k, v in value.items()}
-        if isinstance(value, list):
-            return [_scrub(item) for item in value]
-        return value
+        if isinstance(value, Mapping):
+            return {
+                k: _scrub(v, k, depth + 1)
+                for k, v in value.items()
+                if isinstance(k, str)
+            }
+        if isinstance(value, (list, tuple)):
+            return [_scrub(item, depth=depth + 1) for item in value]
+        if value is None or isinstance(value, (str, bool, int, float)):
+            return value
+        return REDACTED
 
-    return {key: _scrub(value, key) for key, value in event_dict.items()}
+    # Never let a renderer reconstruct an exception, traceback, or stack after
+    # redaction. Chained exceptions can contain credentials and document data.
+    return {
+        key: _scrub(value, key)
+        for key, value in event_dict.items()
+        if key not in {"exc_info", "stack_info"}
+    }
 
 
-def configure_logging(settings: Settings) -> None:
+def configure_logging(settings: Settings | WorkerSettings | AgentWorkerSettings) -> None:
     """Idempotent. Safe to call from both the ASGI app and the Lambda handler."""
     shared: list[Any] = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
         redact_sensitive,  # last before rendering — cannot be bypassed
     ]
 
@@ -94,19 +154,24 @@ def configure_logging(settings: Settings) -> None:
     # logger has. It also means uvicorn, sqlalchemy and application logs all
     # travel through one handler and come out in one format.
     structlog.configure(
-        processors=[*shared, renderer],
+        processors=[*shared, renderer, _mark_sanitized],
         wrapper_class=structlog.make_filtering_bound_logger(level),
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
 
+    handler = logging.StreamHandler(sys.stdout)
+    handler.addFilter(PrivacyLogFilter())
     logging.basicConfig(
         format="%(message)s",
-        stream=sys.stdout,
+        handlers=[handler],
         level=level,
         force=True,
     )
-    for noisy in ("uvicorn.access", "sqlalchemy.engine"):
+    for noisy in (
+        "uvicorn", "uvicorn.error", "uvicorn.access", "sqlalchemy", "sqlalchemy.engine",
+        "botocore", "boto3", "httpx", "httpcore", "mangum", "mangum.http", "mangum.lifespan",
+    ):
         logging.getLogger(noisy).handlers.clear()
         logging.getLogger(noisy).propagate = True
 
@@ -125,8 +190,8 @@ def bind_request_context(
         context["organization_id"] = organization_id
     if user_id:
         context["user_id"] = user_id
-    if route:
-        context["route"] = route
+    # Kept as an ignored compatibility argument; raw paths may contain secrets.
+    del route
     bind_contextvars(**context)
 
 

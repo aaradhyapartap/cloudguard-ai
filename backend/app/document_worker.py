@@ -1,0 +1,73 @@
+"""EventBridge worker for document ingestion."""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+from uuid import UUID
+
+from app.adapters.local.document_processing_repository import SQLAlchemyDocumentProcessingRepository
+from app.core.config import get_settings
+from app.core.container import build_container, build_work_admission
+from app.core.logging import configure_logging, get_logger
+from app.models.tenant import TenantScope
+from app.repositories.database import tenant_session
+from app.security.worker_errors import sanitize_worker_failures
+from app.services.document_processing import DocumentProcessingService
+from app.services.work_admission import WorkKind
+
+logger = get_logger(__name__)
+
+_settings = get_settings()
+configure_logging(_settings)
+_container = build_container(_settings)
+_admission = build_work_admission(_settings)
+
+
+async def _handle(event: dict[str, Any]) -> None:
+    detail_type = event.get("detail-type")
+    if detail_type != "DocumentUploadCompleted":
+        logger.info(
+            "document_worker_event_ignored",
+            ignored_reason="unsupported_event_type",
+        )
+        return
+
+    detail = event.get("detail")
+    if not isinstance(detail, dict):
+        raise ValueError("EventBridge event detail must be an object.")
+
+    organization_id = UUID(str(detail["organization_id"]))
+    document_id = UUID(str(detail["document_id"]))
+
+    scope = TenantScope(organization_id=organization_id)
+
+    async with (
+        _admission.admit(organization_id=organization_id, kind=WorkKind.INGESTION),
+        tenant_session(organization_id) as session,
+    ):
+        repository = SQLAlchemyDocumentProcessingRepository(
+            session=session,
+            scope=scope,
+        )
+        service = DocumentProcessingService(
+            scope=scope,
+            repository=repository,
+            document_store=_container.documents,
+            event_publisher=_container.events,
+            vector_store=_container.vectors,
+            embedding_provider=_container.embeddings,
+        )
+        await service.process_document(document_id)
+
+    logger.info(
+        "document_processing_completed",
+        organization_id=str(organization_id),
+        document_id=str(document_id),
+    )
+
+
+@sanitize_worker_failures
+def handler(event: dict[str, Any], context: Any) -> None:
+    del context
+    asyncio.run(_handle(event))

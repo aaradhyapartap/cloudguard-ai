@@ -1,0 +1,74 @@
+"""Document request and response models for the ingestion API."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from uuid import UUID, uuid4
+
+from pydantic import Field
+
+from app.models.common import DomainModel
+from app.models.enums import ConfidentialityLevel, DocumentType, ProcessingStatus
+from app.security.ingestion_limits import MAX_UPLOAD_BYTES
+
+
+class DocumentCreateRequest(DomainModel):
+    """Metadata supplied before a document is uploaded."""
+
+    filename: str = Field(min_length=1, max_length=512)
+    content_type: str = Field(min_length=1, max_length=160)
+    size_bytes: int = Field(ge=0, le=MAX_UPLOAD_BYTES)
+    document_type: DocumentType = DocumentType.UNKNOWN
+    confidentiality_level: ConfidentialityLevel = ConfidentialityLevel.INTERNAL
+    department: str | None = Field(default=None, max_length=120)
+    source: str | None = Field(default=None, max_length=200)
+    tags: list[str] = Field(default_factory=list, max_length=50)
+
+
+class DocumentResponse(DomainModel):
+    """Server-authoritative representation of a document."""
+
+    id: UUID
+    filename: str
+    content_type: str
+    size_bytes: int
+    document_type: DocumentType
+    confidentiality_level: ConfidentialityLevel
+    processing_status: ProcessingStatus
+    processing_error: str | None
+    uploader_id: UUID
+    department: str | None
+    source: str | None
+    tags: list[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class DocumentUploadResponse(DomainModel):
+    """Document registration plus its short-lived upload destination."""
+
+    document: DocumentResponse
+    upload_url: str
+    expires_in_seconds: int
+
+
+class ProcessingDocument(DomainModel):
+    """Document fields required by the ingestion worker."""
+
+    id: UUID
+    organization_id: UUID
+    filename: str
+    storage_key: str
+    content_type: str
+    processing_status: ProcessingStatus
+    confidentiality_level: ConfidentialityLevel = ConfidentialityLevel.INTERNAL
+
+
+class ProcessingChunk(DomainModel):
+    """Chunk payload produced before persistence."""
+
+    id: UUID = Field(default_factory=uuid4)
+    chunk_index: int
+    content: str
+    token_count: int
+    metadata: dict[str, object]

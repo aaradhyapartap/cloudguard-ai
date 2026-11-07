@@ -1,0 +1,329 @@
+# Current Task
+
+Phase 8 - Security Hardening
+
+## Objective
+
+Harden the completed Phase 1-7 platform against application, tenant, AI, data
+leakage, abuse, and operational threats without weakening the existing authority
+boundaries.
+
+Phase 8 begins from published Phase 7 commit
+`fb9523064cf9b1b7b22d9427026d2b279dda67d7` on branch `phase-8-security`.
+
+## Working security invariants
+
+- The authenticated human `Principal` remains authoritative for organization,
+  actor, role, and clearance.
+- Models and retrieved documents are untrusted data, never an authority source.
+- Tenant checks remain present in application SQL and PostgreSQL forced RLS.
+- The application database role remains `NOBYPASSRLS`.
+- Deterministic Python scoring remains authoritative.
+- Only Manager may decide an approval; Analyst, Admin, model, and workflow may not.
+- Task tokens remain internal and absent from HTTP, public models, audit payloads,
+  and logs.
+- The approved-action worker reloads persisted human state and accepts no action
+  authority from Step Functions input.
+- Published migrations are never edited. Corrections use a forward migration.
+- Security failures are sanitized and fail closed.
+
+## Phase 8.1 - Threat model and security baseline
+
+Deliver:
+
+- `SECURITY.md`;
+- `docs/THREAT_MODEL.md` with assets, actors, boundaries, flows, threats, controls,
+  and honest residual risk;
+- `docs/security/AUTHORIZATION_MATRIX.md`;
+- an ADR establishing PostgreSQL as the canonical approval audit ledger;
+- exact CORS validation and production HTTPS-origin enforcement;
+- removal of the retired `x-dev-principal` CORS allowance;
+- bounded validation of reflected client request IDs; and
+- RAG enforcement of both `DOCUMENT_READ` and `AI_QUERY`.
+- forward migration `0012` normalizing exact least-privilege runtime access across
+  all current application tables after clean database rebuilds.
+
+Done when documentation distinguishes implemented controls from Phase 0 target
+architecture, focused tests pass, the authorization route matrix is green, Ruff and
+mypy pass, and no Phase 7 invariant changes.
+
+The migration regression was discovered by running the authorization route matrix
+through `cloudguard_app` after a clean rebuild. The runtime may read organizations
+and compliance definitions but cannot provision or mutate them. Mutable application
+tables receive only the select/insert/update subset their repositories exercise;
+append-only tables retain select/insert or read-only grants. Forced RLS remains the
+tenant boundary, and the role receives no delete, truncate, reference, trigger, or
+audit-sequence privilege. CI creates the role before migrations and does not issue
+blanket table or sequence grants after migrations complete. Privileged fixture setup
+uses a test-only admin connection rather than widening production permissions.
+
+## Phase 8.2 - Prompt injection and model guardrails
+
+Deliver:
+
+- one shared provider-neutral untrusted-context framing policy;
+- per-request unpredictable context delimiters or an equivalently robust isolation
+  format across RAG, Compliance, Risk, and Reviewer prompts;
+- explicit separation of system policy, user request, trusted identifiers, and
+  untrusted retrieved content;
+- Bedrock Guardrail configuration validation and fail-closed intervention handling;
+- model output checks that reject invented evidence/control/tool identifiers;
+- a reusable adversarial prompt-injection corpus for Phase 9; and
+- tests proving injected text cannot escalate role, tenant, clearance, tools,
+  approval, or write authority.
+
+Carry forward the missing regression proving `control_ids=None` cannot accept a
+model-invented UUID. Reject `control_ids=[]` at the contract boundary instead of
+interpreting it as an ambiguous scope.
+
+Implementation and local validation completed on 2026-10-31; commit pending.
+
+- Shared nonce framing and response-safety checks cover all seven generation paths.
+- Production Guardrail configuration and fail-closed intervention handling are implemented.
+- Unknown identifier/tool checks and the reusable adversarial corpus are covered.
+- Omitted control scopes reject invented controls; explicit empty scopes are rejected.
+- Full backend suite: 912 passed, 92% coverage, including PostgreSQL integration tests.
+- Ruff: clean. Mypy: clean across 131 application source files.
+- PostgreSQL revision: 0012. Published migrations unchanged.
+- Exactly 33 expected paths remain unstaged; diff whitespace checks passed.
+- Local validation used Python 3.14; the configured Python 3.12 CI runtime remains
+  a separate verification.
+- Bedrock tests use controlled provider responses, not live AWS Guardrail evaluation.
+  Deployment must provision and configure the Guardrail resource separately.
+
+## Phase 8.3 - PII and sensitive-data controls
+
+Slice 3 local validation passed on 2026-10-31; commit pending.
+
+- Full backend suite: 1006 passed, 92% coverage, including PostgreSQL integration tests.
+- Infrastructure suite: 38 passed.
+- Backend Ruff: clean. Backend mypy: clean across 134 source files.
+- Infrastructure mypy: clean across 4 source files.
+- PostgreSQL revision: 0012. Published migrations unchanged.
+- Validation used local Python 3.14; Python 3.12 CI remains separately unverified.
+- No deployment, live-provider evaluation, backfill, or reindex was performed.
+
+Implemented: allowlisted retrieval/RAG metadata, sanitized intentional error
+projections, standard-library logging privacy controls, worker failure
+serialization, and explicit CloudWatch workflow-payload exclusion.
+See `docs/security/PROJECTIONS_AND_RUNTIME_PRIVACY.md`. Original authorized
+evidence and native workflow history remain intentionally retained sensitive
+surfaces. Deployment IAM/runtime verification remains required.
+
+Slice 2 local validation passed on 2026-10-31; commit pending.
+Validation: 986 backend tests passed, 92% coverage, Ruff clean, and mypy clean
+across 132 source files. PostgreSQL integration tests passed; migrations unchanged.
+Validation used local Python 3.14; Python 3.12 CI remains separately unverified.
+No live-provider privacy evaluation or reindex was performed.
+
+Implemented: provider-neutral bounded sensitive-data
+detection, minimized generation/embedding inputs, rejected sensitive model output,
+and persisted category/policy annotations on newly ingested original chunks. See
+`docs/security/DATA_HANDLING.md` for coverage and limitations. Remaining Phase 8.3
+work includes metadata/evidence projection, intentional error responses, platform
+logging, and workflow-history review. No backfill or reindex is performed.
+
+Slice 1 local validation passed on 2026-10-31; commit pending.
+Validation: 939 backend tests passed, 92% coverage, Ruff clean, and mypy clean
+across 131 source files. PostgreSQL integration tests passed; migrations unchanged.
+Validation used local Python 3.14; Python 3.12 CI remains separately unverified.
+
+Implemented: safe application logging and sanitized
+request-validation errors. See `docs/security/SAFE_LOGGING.md` for the implemented
+boundary and remaining logging/platform risks. This is not completion of Phase 8.3;
+PII detection, model input/output protection, and evidence-projection review remain.
+
+Deliver:
+
+- explicit data classification and PII handling policy;
+- provider-neutral detection/redaction contracts with local deterministic tests;
+- context minimization before model invocation;
+- output handling that does not leak prohibited sensitive values;
+- logging minimization and removal of raw exception strings, storage keys,
+  filenames, prompts, and document content;
+- recursive redaction coverage for tuples and other structured values;
+- secret, credential, task-token, presigned-URL, and PII leakage tests; and
+- document confidentiality enforcement review across retrieval and evidence
+  projections.
+
+Do not silently discard compliance evidence. Detection, tagging, quarantine, or
+redaction decisions must remain auditable.
+
+## Phase 8.4 - Rate limiting and abuse protection
+
+Slice 4 local validation passed on 2026-11-01; commit pending.
+
+- Full backend suite (including Phase 8.5 security regressions): 1223 passed, 92% coverage, including PostgreSQL integration and RLS tests.
+- Infrastructure suite: 47 passed.
+- Backend Ruff: clean. Backend mypy: clean across 147 source files (`app` + `tests/security`).
+- Infrastructure mypy: clean across 5 source files.
+- PostgreSQL revision: 0012. Published migrations unchanged.
+- Local `AgentWorkflow` requires `WorkAdmission` (`WorkKind.MODEL`) and enforces both `Permission.DOCUMENT_READ` and `Permission.AI_QUERY` before any model work (admitting one local workflow run rather than each deployed worker step).
+- Validation used local Python 3.14; Python 3.12 CI remains separately unverified.
+- No deployment, live AWS enforcement evaluation, or external IAM mutation was performed.
+
+Slice 4 summary:
+
+Shared per-tenant worker admission gates Research, Risk, Reviewer, and ingestion
+before costly work. Fixed-window quotas and owner-checked expiring slots use
+separate namespaces in the existing operational admission table. CDK supplies
+the table and narrowly scoped permissions to those four workers only. Local
+development uses bounded in-memory stores; non-local workers fail closed without
+the shared table. No migration, deployment, or external IAM mutation is performed.
+See `docs/security/WORKER_ADMISSION.md` for failure and rollout semantics.
+
+This bounds active worker steps, not queued workflow starts, pending approvals,
+API model concurrency, or provider-side work after a timeout. Workflow-start
+admission, edge/API wiring, native input-token budgets, parser isolation, and
+live enforcement verification remain outstanding. Human approval and the
+ingestion DLQ are unchanged. Python 3.12 CI remains separately unverified.
+
+Slice 3 local validation passed on 2026-11-01; commit pending.
+
+- Full backend suite: 1090 passed, 92% coverage, including PostgreSQL integration tests.
+- Infrastructure suite: 44 passed.
+- Backend Ruff: clean. Backend mypy: clean across 140 source files.
+- Infrastructure mypy: clean across 5 source files.
+- PostgreSQL revision: 0012. Published migrations unchanged.
+- Large-payload parametrizations use short test IDs for Windows compatibility.
+- Validation used local Python 3.14; Python 3.12 CI remains separately unverified.
+- No deployment, live AWS enforcement evaluation, migration, or model replacement was performed.
+
+Implemented: shared generation-envelope/output budgets,
+positive bounded output-token requests, configured Bedrock output caps, embedding
+batch/input/response bounds, explicit single-attempt Bedrock SDK calls, bounded
+Lambda admission-throttle retries, ingestion delivery retries, and reserved
+concurrency for deployed model/ingestion workers. See `docs/security/RESOURCE_BUDGETS.md`.
+Human approval wait, authorization, original evidence, and ingestion DLQ are retained.
+Native input-token counting is not claimed: the configured Nova Pro reviewer does
+not support CountTokens. Workflow-start admission, tenant concurrency, edge/API
+deployment wiring, and live resource-limit verification remain outstanding.
+No deployment, migration, or model replacement is performed by this slice.
+
+Slice 2 local validation passed on 2026-10-31; commit pending.
+
+- Full backend suite: 1066 passed, 92% coverage, including PostgreSQL integration tests.
+- Infrastructure suite: 40 passed.
+- Backend Ruff: clean. Backend mypy: clean across 139 source files.
+- Infrastructure mypy: clean across 5 source files.
+- PostgreSQL revision: 0012. Published migrations unchanged.
+- Validation used local Python 3.14; Python 3.12 CI remains separately unverified.
+- No deployment, live AWS enforcement evaluation, or external IAM change was performed.
+
+Implemented: centralized request admission for existing
+API routes, per-peer authentication/login quotas, verified user/tenant budgets,
+bounded local counters, and a conditional DynamoDB counter adapter/stack.
+Deployed API composition requires RATE_LIMIT_TABLE_NAME and never falls back to
+process memory. API role/environment wiring, trusted proxy configuration, and
+live shared-counter verification remain deployment requirements. No workflow-start
+HTTP route exists to attach a gate to; workflow/ingestion admission, concurrency,
+model/retry bounds, and edge/WAF controls remain outstanding. See
+`docs/security/RATE_LIMITING.md`. No deployment or migration change is performed.
+
+Slice 1 local validation passed on 2026-10-31; commit pending.
+
+- Full backend suite: 1033 passed, 92% coverage, including PostgreSQL integration tests.
+- Backend Ruff: clean. Mypy: clean across 135 source files.
+- PostgreSQL revision: 0012. Published migrations unchanged.
+- Validation used local Python 3.14; Python 3.12 CI remains separately unverified.
+- No deployment, live AWS validation, backfill, reindex, or deletion was performed.
+
+Implemented: centralized per-document ingestion budgets
+bound registered/actual bytes, S3 worker reads, PDF pages, extracted characters,
+and chunks before persistence or embedding. See `docs/security/INGESTION_BUDGETS.md`.
+Rate limiting, concurrent work admission, model/retry budgets, parser resource
+isolation, and deployed edge/storage enforcement remain outstanding. No deployment
+or published migration change is performed by this slice.
+
+Deliver one centralized policy with deterministic tests for:
+
+- authentication and local login;
+- retrieval and RAG;
+- compliance/model extraction;
+- agent workflow start;
+- approval read/decision APIs; and
+- document registration/completion and ingestion.
+
+Also bound registered and actual upload size, PDF pages/extracted characters,
+chunks, model tokens, retry counts, and concurrent cost-bearing work. Application
+limits and edge/API Gateway/WAF limits are defense-in-depth, not substitutes.
+
+## Phase 8.5 - Security regression and CI
+
+Local validation passed on 2026-11-01; commit pending.
+
+- Dedicated `backend/tests/security/` suite (`test_security_regressions.py`: 94 deterministic service/route/contract tests, `test_callback_race.py`: 6 mocked RDS Data API / callback-port race tests, `test_rls_security.py`: 7 real PostgreSQL `cloudguard_app` `NOBYPASSRLS` tests + 1 migration-file sequence check gated by `REQUIRE_SECURITY_DB_TESTS=1`): 108 passed.
+- `.github/workflows/ci.yml` updated with blocking `Security regressions` step (`REQUIRE_SECURITY_DB_TESTS=1`), dedicated `infrastructure` job (`mypy stacks` + `pytest -ra`), blocking `pip-audit` for `backend` and `infrastructure` (verified 0 vulnerabilities), blocking `npm audit --audit-level=high` (verified 0 high/critical vulnerabilities; 14 moderate dev-only `eslint`/`minimatch` advisories remain), executable frontend component tests (`npm test`), `gitleaks`, and `aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1` (`v0.35.0`) container image scanning without `ignore-unfixed: true` (using a component-scoped, time-bounded `.trivyignore.yaml` targeting `usr/local/bin/aws-lambda-rie`).
+- Special review items resolved in source:
+  - Callback synchronization race (`CG-14`): `AuroraDataAPIApprovalExecutionRepository.execute_for_workflow` uses bounded readiness polling (`CallbackDeliveryNotCommittedError`, 4 attempts, 50 ms backoff, rolling back the `FOR UPDATE` row lock between attempts and failing closed with a sanitized `UpstreamError` if rollback fails) and fails closed without side-effect execution when `callback_delivered_at` remains uncommitted.
+  - Historical migration `0005`: audited against `tables.py` and live PostgreSQL `pg_indexes` at revision `0012`; all 17 expected indexes/unique constraints are present and enforced by `test_migration_0005_expected_indexes_exist_in_postgresql`. Published migrations `0001`–`0012` are unchanged.
+  - Hosted login PKCE/state/nonce and lifecycle safety: `frontend/src/lib/auth.ts`, `AuthProvider.tsx`, `AuthProvider.test.tsx`, and `login/page.tsx` implement RFC 7636 PKCE (`S256`, 48-byte verifier), 24-byte `state` and `nonce`, single-use `sessionStorage` transaction records (`cloudguard.auth.pkce`), `/oauth2/token` code exchange, ID token claim verification (`token_use=id`, `iss`, `aud`, `nonce`, `exp`), callback URL scrubbing, and cancellation/logout lifecycle safety (`npm test` 6 passed, `npm run lint`, `npm run typecheck`, and `npm run build` pass). Static SPA `sessionStorage` XSS exposure and live Cognito Hosted UI runtime verification remain documented residual/deployment items.
+
+Deliver:
+
+- dedicated `tests/security/` suites;
+- cross-tenant, clearance, RBAC, forged identity/organization, prompt injection,
+  tool misuse, invented evidence, approval bypass, token leakage, side-effect
+  bypass, rate-limit, PII, and safe-logging cases;
+- blocking security CI jobs;
+- effective Python and npm dependency audits;
+- gitleaks and container scanning; and
+- a final security/architecture review.
+
+The injection/adversarial corpus and authorization matrix are blocking. No live
+model call is required for deterministic CI security tests.
+
+## Phase 8 special review items
+
+### Callback synchronization race
+
+`SendTaskSuccess` can resume Step Functions before `callback_delivered_at` is
+committed. The execution repository currently fails closed. Add a bounded readiness
+retry/barrier or safe reconciliation keyed to a distinct error condition. Never mark
+the callback delivered before provider success and never claim distributed exactly
+once.
+
+### Approval audit storage
+
+PostgreSQL remains canonical for approval audit events. Do not add a direct DynamoDB
+dual write. A future projection requires a durable outbox/replay design. No general
+`AuditEvent` or `AgentExecution` subsystem currently exists.
+
+### Historical migration 0005
+
+Audit the expected indexes against a real upgraded database. If compatibility work
+is necessary, create a new idempotent forward migration; do not rewrite `0005`.
+
+### Hosted login and browser token storage
+
+Complete PKCE, state, nonce, and callback handling before describing Cognito hosted
+login as production-ready. The static SPA's `sessionStorage` token remains a
+documented XSS/session-theft residual risk.
+
+## Explicit non-goals
+
+Phase 8 does not introduce:
+
+- arbitrary or autonomous remediation;
+- model-decided approvals;
+- emergent agent delegation;
+- identity or tenant authority from model/workflow/request payloads;
+- a distributed exactly-once callback claim;
+- a fictional DynamoDB audit subsystem; or
+- a weakening of RLS, RBAC, evidence provenance, or approval constraints.
+
+## Validation and publishing
+
+For each coherent subphase:
+
+1. Run focused tests.
+2. Run relevant backend and infrastructure regressions.
+3. Run Ruff and mypy for affected Python.
+4. Run real PostgreSQL tests for persistence/RLS changes.
+5. Run `git diff --check` and security/architecture review.
+6. Confirm the exact changed-file inventory.
+7. Stage only that inventory after all checks pass.
+8. Verify published migrations are unchanged.
+9. Commit, push, fetch, and compare the full local/remote hashes.
+
+Do not publish a subphase while any required control or regression is failing.

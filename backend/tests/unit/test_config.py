@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from app.core.config import Environment, Settings
+from app.core.config import AgentWorkerSettings, Environment, Settings, WorkerSettings
 from pydantic import ValidationError
 
 
@@ -13,6 +13,64 @@ def test_defaults_are_safe_for_local_development() -> None:
     assert settings.llm_provider == "mock"
     assert settings.identity_provider == "local"
     assert settings.docs_enabled is True
+
+
+def test_worker_settings_safe_without_identity() -> None:
+    """Worker settings do not require Cognito or identity provider."""
+    worker = WorkerSettings(environment=Environment.DEV)
+    assert worker.environment is Environment.DEV
+    assert worker.document_store == "memory"
+    assert worker.event_publisher == "memory"
+
+
+def test_agent_worker_settings_are_identity_free_and_feature_gated() -> None:
+    """Agent workflow tasks do not require API identity configuration."""
+    worker = AgentWorkerSettings(environment=Environment.DEV)
+    assert worker.environment is Environment.DEV
+    assert worker.llm_provider == "mock"
+    assert worker.vector_store == "memory"
+    assert worker.features.agentic_workflows is False
+
+
+def test_production_agent_worker_rejects_mock_llm() -> None:
+    """Production agent tasks must never silently use the mock provider."""
+    with pytest.raises(
+        ValidationError,
+        match="prod agent workers must use the bedrock LLM provider",
+    ):
+        AgentWorkerSettings(
+            environment=Environment.PROD,
+            llm_provider="mock",
+        )
+
+
+def test_production_agent_worker_rejects_recorded_llm() -> None:
+    """Recorded model responses are also forbidden in production agent tasks."""
+    with pytest.raises(
+        ValidationError,
+        match="prod agent workers must use the bedrock LLM provider",
+    ):
+        AgentWorkerSettings(
+            environment=Environment.PROD,
+            llm_provider="recorded",
+        )
+
+
+def test_production_agent_worker_accepts_bedrock_llm() -> None:
+    """Bedrock is the only valid production agent model provider."""
+    worker = AgentWorkerSettings(
+        environment=Environment.PROD,
+        llm_provider="bedrock",
+        bedrock={"guardrail_id": "gr-production", "guardrail_version": "1"},
+    )
+
+    assert worker.llm_provider == "bedrock"
+
+
+def test_dev_api_requires_cognito_or_fails() -> None:
+    """API Settings in dev environment default to local auth and fail without Cognito."""
+    with pytest.raises(ValidationError, match="permitted only when environment='local'"):
+        Settings(environment=Environment.DEV)
 
 
 def test_production_rejects_a_test_double_llm() -> None:
@@ -33,6 +91,8 @@ def production_settings(**overrides: object) -> Settings:
         "llm_provider": "bedrock",
         "identity_provider": "cognito",
         "cognito": {"user_pool_id": "us-east-1_Pool", "client_id": "client-123"},
+        "cors_origins": ["https://console.cloudguard.example"],
+        "bedrock": {"guardrail_id": "gr-production", "guardrail_version": "1"},
     }
     base.update(overrides)
     return Settings(**base)  # type: ignore[arg-type]
@@ -74,8 +134,66 @@ def test_cognito_issuer_is_derived_from_pool() -> None:
 
 
 def test_cors_origins_accept_a_comma_separated_env_value() -> None:
-    settings = Settings(cors_origins="http://a.test, http://b.test")  # type: ignore[arg-type]
+    settings = Settings(cors_origins="http://a.test, http://b.test")
     assert settings.cors_origins == ["http://a.test", "http://b.test"]
+
+
+@pytest.mark.parametrize(
+    "origins",
+    [
+        [],
+        ["*"],
+        ["https://console.example/path"],
+        ["https://user:password@console.example"],
+        ["https://console.example:not-a-port"],
+        ["https://console example"],
+        ["javascript:alert(1)"],
+    ],
+)
+def test_cors_origins_reject_non_origin_values(origins: list[str]) -> None:
+    with pytest.raises(ValidationError, match=r"cors_origins|CORS origins"):
+        Settings(cors_origins=origins)
+
+
+def test_cors_origins_are_deduplicated() -> None:
+    settings = Settings(
+        cors_origins=["https://console.example", "https://console.example"]
+    )
+    assert settings.cors_origins == ["https://console.example"]
+
+
+def test_production_rejects_insecure_cors_origin() -> None:
+    with pytest.raises(ValidationError, match="prod CORS origins must use https"):
+        production_settings(cors_origins=["http://console.cloudguard.example"])
+
+
+@pytest.mark.parametrize(
+    "bedrock",
+    [
+        {"guardrail_id": "gr-only"},
+        {"guardrail_version": "1"},
+        {"guardrail_id": "   ", "guardrail_version": "1"},
+        {"guardrail_id": "gr-only", "guardrail_version": "   "},
+    ],
+)
+def test_guardrail_id_and_version_must_be_configured_together(
+    bedrock: dict[str, str],
+) -> None:
+    with pytest.raises(ValidationError, match="must be configured together"):
+        Settings(bedrock=bedrock)
+
+
+def test_production_api_requires_bedrock_guardrail() -> None:
+    with pytest.raises(ValidationError, match="requires a configured guardrail"):
+        production_settings(bedrock={})
+
+
+def test_production_agent_worker_requires_bedrock_guardrail() -> None:
+    with pytest.raises(ValidationError, match="requires a configured guardrail"):
+        AgentWorkerSettings(
+            environment=Environment.PROD,
+            llm_provider="bedrock",
+        )
 
 
 def test_database_dsn_is_built_from_parts() -> None:
