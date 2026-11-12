@@ -170,3 +170,47 @@ def test_handler_ignores_untrusted_scheduler_payload(
     )
 
     assert result["delivered"] == 0
+
+
+@pytest.mark.parametrize("env_name", ["dev", "staging", "prod"])
+def test_callback_recovery_worker_starts_with_synthesized_env_without_cognito_or_guardrail(
+    monkeypatch: pytest.MonkeyPatch,
+    env_name: str,
+) -> None:
+    """Callback recovery worker starts in dev/staging/prod without Cognito or Guardrail."""
+    from app.adapters.aws.approval_callback import StepFunctionsApprovalCallback
+    from app.adapters.aws.approval_callback_recovery_repository import (
+        AuroraDataAPIApprovalCallbackRecoveryRepository,
+    )
+    from app.core.config import get_approval_worker_settings
+
+    for key in (
+        "IDENTITY_PROVIDER",
+        "COGNITO_USER_POOL_ID",
+        "COGNITO_CLIENT_ID",
+        "CORS_ORIGINS",
+        "BEDROCK_GUARDRAIL_ID",
+        "BEDROCK_GUARDRAIL_VERSION",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("ENVIRONMENT", env_name)
+    monkeypatch.setenv(
+        "AWS_AURORA_CLUSTER_ARN",
+        "arn:aws:rds:us-east-1:111122223333:cluster:cloudguard",
+    )
+    monkeypatch.setenv(
+        "AWS_AURORA_SECRET_ARN",
+        "arn:aws:secretsmanager:us-east-1:111122223333:secret:cloudguard",
+    )
+    monkeypatch.setenv("DB_NAME", "cloudguard")
+    monkeypatch.setenv("ENABLE_AGENTIC_WORKFLOWS", "true")
+    get_approval_worker_settings.cache_clear()
+
+    try:
+        repo = worker._build_repository()
+        cb = worker._build_callback()
+        assert isinstance(repo, AuroraDataAPIApprovalCallbackRecoveryRepository)
+        assert isinstance(cb, StepFunctionsApprovalCallback)
+    finally:
+        get_approval_worker_settings.cache_clear()

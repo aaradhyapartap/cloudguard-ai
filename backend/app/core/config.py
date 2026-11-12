@@ -25,6 +25,7 @@ from app.security.model_budgets import MAX_GENERATION_INPUT_BYTES, MAX_GENERATIO
 class Environment(StrEnum):
     LOCAL = "local"
     DEV = "dev"
+    STAGING = "staging"
     PROD = "prod"
 
 
@@ -259,8 +260,19 @@ class Settings(BaseSettings):
     @field_validator("llm_provider")
     @classmethod
     def _no_mock_llm_in_prod(cls, value: str, info: ValidationInfo) -> str:
-        if info.data.get("environment") is Environment.PROD and value != "bedrock":
-            raise ValueError("prod must use the bedrock LLM provider, not a test double")
+        """Forbid mock/recorded LLM providers in staging and prod.
+
+        Staging enforces production-equivalent model and transport protections
+        (real Bedrock provider, non-local Cognito auth, HTTPS-only CORS origins,
+        and disabled OpenAPI docs), while mandatory Bedrock Guardrail IDs remain
+        strictly required in prod and validated as a complete pair when supplied
+        in dev or staging (matching AgentWorkflowStack and deploy.yml).
+        """
+        env = info.data.get("environment")
+        if env in {Environment.STAGING, Environment.PROD} and value != "bedrock":
+            raise ValueError(
+                f"{env.value} must use the bedrock LLM provider, not a test double"
+            )
         return value
 
     @field_validator("identity_provider")
@@ -289,10 +301,10 @@ class Settings(BaseSettings):
                 "and COGNITO_CLIENT_ID"
             )
 
-        if self.environment is Environment.PROD and any(
+        if self.environment in {Environment.STAGING, Environment.PROD} and any(
             urlsplit(origin).scheme != "https" for origin in self.cors_origins
         ):
-            raise ValueError("prod CORS origins must use https")
+            raise ValueError(f"{self.environment.value} CORS origins must use https")
         if self.environment is Environment.PROD and not (
             self.bedrock.guardrail_id and self.bedrock.guardrail_version
         ):
@@ -307,10 +319,10 @@ class Settings(BaseSettings):
 
     @property
     def docs_enabled(self) -> bool:
-        """OpenAPI docs are a reconnaissance surface. Off in prod by default."""
+        """OpenAPI docs are a reconnaissance surface. Off in staging and prod by default."""
         if self.enable_openapi_docs is not None:
             return self.enable_openapi_docs
-        return self.environment is not Environment.PROD
+        return self.environment not in {Environment.STAGING, Environment.PROD}
 
 
 class WorkerSettings(BaseSettings):
@@ -339,6 +351,33 @@ class WorkerSettings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     aws: AWSSettings = Field(default_factory=AWSSettings)
     bedrock: BedrockSettings = Field(default_factory=BedrockSettings)
+
+    @field_validator("llm_provider")
+    @classmethod
+    def _no_test_embeddings_in_prod_or_staging(
+        cls, value: str, info: ValidationInfo
+    ) -> str:
+        """Staging and production ingestion workers must use real Bedrock embeddings."""
+        env = info.data.get("environment")
+        if env in {Environment.STAGING, Environment.PROD} and value != "bedrock":
+            raise ValueError(
+                f"{env.value} document workers must use the bedrock LLM provider, not a test double"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _deployed_s3_ingestion_requires_bedrock_embeddings(self) -> WorkerSettings:
+        """Prevent unintended mock/recorded embeddings in deployed S3 ingestion."""
+        if (
+            self.environment is not Environment.LOCAL
+            and self.document_store == "s3"
+            and self.llm_provider != "bedrock"
+        ):
+            raise ValueError(
+                "Deployed S3 ingestion requires LLM_PROVIDER='bedrock' to prevent "
+                "unintended mock embeddings"
+            )
+        return self
 
 
 class AgentWorkerSettings(BaseSettings):
@@ -370,10 +409,11 @@ class AgentWorkerSettings(BaseSettings):
     @field_validator("llm_provider")
     @classmethod
     def _no_test_llm_in_prod(cls, value: str, info: ValidationInfo) -> str:
-        """Production agent workers must use the real Bedrock provider."""
-        if info.data.get("environment") is Environment.PROD and value != "bedrock":
+        """Staging and production agent workers must use the real Bedrock provider."""
+        env = info.data.get("environment")
+        if env in {Environment.STAGING, Environment.PROD} and value != "bedrock":
             raise ValueError(
-                "prod agent workers must use the bedrock LLM provider, not a test double"
+                f"{env.value} agent workers must use the bedrock LLM provider, not a test double"
             )
         return value
 
@@ -386,6 +426,30 @@ class AgentWorkerSettings(BaseSettings):
                 "prod Bedrock model generation requires a configured guardrail"
             )
         return self
+
+
+class ApprovalWorkerSettings(BaseSettings):
+    """Scoped configuration for non-model approval and callback workers.
+
+    Approval creation, callback recovery, and approved-action execution workers
+    reconcile workflow state through the Aurora RDS Data API and Step Functions
+    without serving HTTP traffic or invoking Bedrock models. They must not
+    require Cognito, CORS, or Bedrock model/Guardrail settings merely to start.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=(".env", "../.env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    environment: Environment = Environment.LOCAL
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    log_format: Literal["json", "console"] = "console"
+
+    database: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    aws: AWSSettings = Field(default_factory=AWSSettings)
+    features: FeatureFlags = Field(default_factory=FeatureFlags)
 
 
 @lru_cache
@@ -404,3 +468,9 @@ def get_worker_settings() -> WorkerSettings:
 def get_agent_worker_settings() -> AgentWorkerSettings:
     """Cached configuration for deployed agent workflow tasks."""
     return AgentWorkerSettings()
+
+
+@lru_cache
+def get_approval_worker_settings() -> ApprovalWorkerSettings:
+    """Cached configuration for non-model approval and callback workers."""
+    return ApprovalWorkerSettings()

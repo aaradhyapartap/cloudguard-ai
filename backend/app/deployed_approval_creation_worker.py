@@ -1,4 +1,4 @@
-﻿"""Deployed Step Functions task that creates a pending human Approval."""
+"""Deployed Step Functions task that creates a pending human Approval."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.config import get_agent_worker_settings
+from app.core.config import get_approval_worker_settings
 from app.core.logging import configure_logging
 from app.models.agent_workflow import AgentWorkflowResearchResult
 from app.models.principal import Principal
@@ -30,7 +30,7 @@ class ApprovalCreationWorkflowTaskInput(BaseModel):
     task_token: str = Field(min_length=1)
 
 
-_settings = get_agent_worker_settings()
+_settings = get_approval_worker_settings()
 configure_logging(_settings)
 
 
@@ -40,8 +40,9 @@ def _build_repository() -> Any:
         AuroraDataAPIApprovalCreationRepository,
     )
 
-    resource_arn = _settings.aws.aurora_cluster_arn
-    secret_arn = _settings.aws.aurora_secret_arn
+    settings = get_approval_worker_settings()
+    resource_arn = settings.aws.aurora_cluster_arn
+    secret_arn = settings.aws.aurora_secret_arn
 
     if not resource_arn:
         raise RuntimeError(
@@ -55,16 +56,17 @@ def _build_repository() -> Any:
     return AuroraDataAPIApprovalCreationRepository(
         resource_arn=resource_arn,
         secret_arn=secret_arn,
-        database=_settings.database.name,
-        region=_settings.aws.region,
-        endpoint_url=_settings.aws.endpoint_url,
+        database=settings.database.name,
+        region=settings.aws.region,
+        endpoint_url=settings.aws.endpoint_url,
     )
 
 
 async def _handle(event: dict[str, Any]) -> dict[str, Any]:
     task_input = ApprovalCreationWorkflowTaskInput.model_validate(event)
 
-    if not _settings.features.agentic_workflows:
+    settings = get_approval_worker_settings()
+    if not settings.features.agentic_workflows:
         raise RuntimeError("Agentic workflows are disabled.")
 
     service = ApprovalCreationService(repository=_build_repository())
@@ -92,4 +94,5 @@ async def _handle(event: dict[str, Any]) -> dict[str, Any]:
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda entrypoint for the Approval creation wait state."""
     del context
+    configure_logging(get_approval_worker_settings())
     return asyncio.run(_handle(event))

@@ -858,6 +858,8 @@ def test_worker_startup_with_synthesized_environment(monkeypatch: pytest.MonkeyP
         "AWS_DOCUMENTS_BUCKET": "cloudguard-documents-dev-123456789012",
         "EVENT_PUBLISHER": "eventbridge",
         "AWS_EVENT_BUS_NAME": "cloudguard-events",
+        "LLM_PROVIDER": "bedrock",
+        "BEDROCK_EMBEDDING_MODEL": "amazon.titan-embed-text-v2:0",
         "VECTOR_STORE": "s3_vectors",
         "AWS_S3_VECTOR_INDEX_ARN": (
             "arn:aws:s3vectors:us-east-1:123456789012:bucket/cloudguard-vector-bucket/index/cloudguard-vector-index"

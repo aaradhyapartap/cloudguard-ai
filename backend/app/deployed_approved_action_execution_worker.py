@@ -1,4 +1,4 @@
-﻿"""Trusted deployed worker for Phase 7.5 approved-action execution."""
+"""Trusted deployed worker for Phase 7.5 approved-action execution."""
 
 from __future__ import annotations
 
@@ -11,7 +11,8 @@ from pydantic import BaseModel, ConfigDict
 from app.adapters.aws.approval_execution_repository import (
     AuroraDataAPIApprovalExecutionRepository,
 )
-from app.core.config import get_settings
+from app.core.config import get_approval_worker_settings
+from app.core.logging import configure_logging
 from app.models.approved_action_execution import (
     ActionExecutionDisposition,
 )
@@ -29,7 +30,7 @@ class ApprovedActionExecutionWorkflowTaskInput(BaseModel):
 
 
 def _build_repository() -> AuroraDataAPIApprovalExecutionRepository:
-    settings = get_settings()
+    settings = get_approval_worker_settings()
 
     resource_arn = settings.aws.aurora_cluster_arn
     secret_arn = settings.aws.aurora_secret_arn
@@ -58,7 +59,7 @@ async def _handle(
         )
     )
 
-    settings = get_settings()
+    settings = get_approval_worker_settings()
     if not settings.features.agentic_workflows:
         raise RuntimeError(
             "Agentic workflows are disabled."
@@ -86,6 +87,7 @@ def handler(
 ) -> dict[str, Any]:
     """Lambda entrypoint for the post-approval execution state."""
     del context
+    configure_logging(get_approval_worker_settings())
     return asyncio.run(
         _handle(event)
     )

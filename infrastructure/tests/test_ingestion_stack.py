@@ -377,10 +377,82 @@ def test_lambda_environment_variables(
                         "DB_NAME": "cloudguard",
                         "DOCUMENT_STORE": "s3",
                         "EVENT_PUBLISHER": "eventbridge",
+                        "LLM_PROVIDER": "bedrock",
+                        "BEDROCK_EMBEDDING_MODEL": "amazon.titan-embed-text-v2:0",
                     }
                 ),
             },
         },
+    )
+
+
+def test_lambda_has_model_scoped_bedrock_invoke_permission(
+    ingestion_template: assertions.Template,
+) -> None:
+    """The processing Lambda role must grant bedrock:InvokeModel scoped to the configured embedding model."""
+    policies = ingestion_template.find_resources("AWS::IAM::Policy")
+    serialized = json.dumps(policies, separators=(",", ":"))
+    assert '"Action":"bedrock:InvokeModel"' in serialized
+    assert ":bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0" in serialized
+
+
+def test_embedding_model_consistent_across_ingestion_and_research() -> None:
+    """Ingestion and Research workers must receive matching BEDROCK_EMBEDDING_MODEL and IAM policy."""
+    import aws_cdk as cdk
+
+    from stacks.agent_workflow_stack import AgentWorkflowStack
+    from stacks.ingestion_stack import IngestionStack
+
+    custom_embedding_model = "amazon.titan-embed-text-v2:0"
+    app = cdk.App()
+    ingestion = IngestionStack(
+        app,
+        "TestIngestion",
+        environment_name="staging",
+        aurora_cluster_arn="arn:aws:rds:us-east-1:111122223333:cluster:cloudguard",
+        aurora_secret_arn="arn:aws:secretsmanager:us-east-1:111122223333:secret:cloudguard",
+        event_bus_name="cloudguard-events",
+        embedding_model_id=custom_embedding_model,
+        admission_table_name="cloudguard-api-rate-limits-staging",
+        admission_table_arn="arn:aws:dynamodb:us-east-1:111122223333:table/cloudguard-api-rate-limits-staging",
+    )
+    workflow = AgentWorkflowStack(
+        app,
+        "TestWorkflow",
+        environment_name="staging",
+        aurora_cluster_arn="arn:aws:rds:us-east-1:111122223333:cluster:cloudguard",
+        aurora_secret_arn="arn:aws:secretsmanager:us-east-1:111122223333:secret:cloudguard",
+        chat_model_id="anthropic.claude-haiku-4-5-20251001-v1:0",
+        reviewer_model_id="amazon.nova-pro-v1:0",
+        embedding_model_id=custom_embedding_model,
+        agentic_workflows_enabled=True,
+        admission_table_name="cloudguard-api-rate-limits-staging",
+        admission_table_arn="arn:aws:dynamodb:us-east-1:111122223333:table/cloudguard-api-rate-limits-staging",
+    )
+
+    ingestion_functions = assertions.Template.from_stack(ingestion).find_resources(
+        "AWS::Lambda::Function"
+    )
+    ingestion_vars = next(
+        res["Properties"]["Environment"]["Variables"]
+        for res in ingestion_functions.values()
+        if res["Properties"].get("FunctionName") == "cloudguard-document-processor-staging"
+    )
+    workflow_functions = assertions.Template.from_stack(workflow).find_resources(
+        "AWS::Lambda::Function"
+    )
+    research_vars = next(
+        res["Properties"]["Environment"]["Variables"]
+        for res in workflow_functions.values()
+        if res["Properties"].get("FunctionName") == "cloudguard-agent-research-staging"
+    )
+
+    assert ingestion_vars["LLM_PROVIDER"] == "bedrock"
+    assert research_vars["LLM_PROVIDER"] == "bedrock"
+    assert (
+        ingestion_vars["BEDROCK_EMBEDDING_MODEL"]
+        == research_vars["BEDROCK_EMBEDDING_MODEL"]
+        == custom_embedding_model
     )
 
 

@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import pytest
-from app.core.config import AgentWorkerSettings, Environment, Settings, WorkerSettings
+from app.core.config import (
+    AgentWorkerSettings,
+    ApprovalWorkerSettings,
+    Environment,
+    Settings,
+    WorkerSettings,
+)
 from pydantic import ValidationError
 
 
@@ -204,3 +210,190 @@ def test_database_dsn_is_built_from_parts() -> None:
 
 def test_cognito_issuer_is_none_until_configured() -> None:
     assert Settings().cognito.issuer is None
+
+
+def staging_settings(**overrides: object) -> Settings:
+    """A minimally valid staging API configuration."""
+    base: dict[str, object] = {
+        "environment": Environment.STAGING,
+        "llm_provider": "bedrock",
+        "identity_provider": "cognito",
+        "cognito": {"user_pool_id": "us-east-1_StagingPool", "client_id": "client-stg"},
+        "cors_origins": ["https://staging.cloudguard.example"],
+    }
+    base.update(overrides)
+    return Settings(**base)  # type: ignore[arg-type]
+
+
+def test_staging_environment_accepts_secure_configuration() -> None:
+    settings = staging_settings()
+    assert settings.environment is Environment.STAGING
+    assert settings.docs_enabled is False
+    assert settings.is_local is False
+
+
+def test_staging_rejects_local_identity_provider() -> None:
+    with pytest.raises(ValidationError, match="permitted only when environment='local'"):
+        staging_settings(identity_provider="local")
+
+
+@pytest.mark.parametrize("provider", ["mock", "recorded"])
+def test_staging_rejects_test_double_llm_across_settings_and_workers(
+    provider: str,
+) -> None:
+    with pytest.raises(ValidationError, match="staging must use the bedrock LLM provider"):
+        staging_settings(llm_provider=provider)
+
+    with pytest.raises(
+        ValidationError, match="staging document workers must use the bedrock LLM provider"
+    ):
+        WorkerSettings(environment=Environment.STAGING, llm_provider=provider)  # type: ignore[arg-type]
+
+    with pytest.raises(
+        ValidationError, match="staging agent workers must use the bedrock LLM provider"
+    ):
+        AgentWorkerSettings(environment=Environment.STAGING, llm_provider=provider)  # type: ignore[arg-type]
+
+
+def test_staging_rejects_insecure_cors_origin() -> None:
+    with pytest.raises(ValidationError, match="staging CORS origins must use https"):
+        staging_settings(cors_origins=["http://staging.cloudguard.example"])
+
+
+def test_deployed_s3_ingestion_rejects_mock_embeddings() -> None:
+    for env in (Environment.DEV, Environment.STAGING, Environment.PROD):
+        with pytest.raises(
+            ValidationError,
+            match=r"bedrock LLM provider|requires LLM_PROVIDER='bedrock'",
+        ):
+            WorkerSettings(
+                environment=env,
+                document_store="s3",
+                llm_provider="mock",
+            )
+
+
+def test_approval_worker_settings_start_without_cognito_cors_or_guardrail() -> None:
+    for env in (Environment.DEV, Environment.STAGING, Environment.PROD):
+        settings = ApprovalWorkerSettings(
+            environment=env,
+            aws={
+                "aurora_cluster_arn": "arn:aws:rds:us-east-1:111122223333:cluster:cg",
+                "aurora_secret_arn": "arn:aws:secretsmanager:us-east-1:111122223333:secret:cg",
+            },
+            features={"agentic_workflows": True},
+        )
+        assert settings.environment is env
+        assert settings.features.agentic_workflows is True
+
+
+def test_synthesized_worker_environments_validate_across_dev_staging_and_prod(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Synthesized Lambda environment contracts for dev/staging/prod validate in worker settings."""
+    from app.adapters.bedrock.embedding import BedrockEmbeddingProvider
+    from app.core.container import build_worker_container
+
+    for env_name in ("dev", "staging", "prod"):
+        ing_vars = {
+            "RATE_LIMIT_TABLE_NAME": f"cloudguard-api-rate-limits-{env_name}",
+            "ENVIRONMENT": env_name,
+            "AWS_AURORA_CLUSTER_ARN": f"arn:aws:rds:us-east-1:123456789012:cluster:cg-{env_name}",
+            "AWS_AURORA_SECRET_ARN": (
+                f"arn:aws:secretsmanager:us-east-1:123456789012:secret:cg-{env_name}"
+            ),
+            "DB_NAME": "cloudguard",
+            "DOCUMENT_STORE": "s3",
+            "AWS_DOCUMENTS_BUCKET": f"cloudguard-documents-{env_name}-123456789012",
+            "EVENT_PUBLISHER": "eventbridge",
+            "AWS_EVENT_BUS_NAME": "cloudguard-events",
+            "LLM_PROVIDER": "bedrock",
+            "BEDROCK_EMBEDDING_MODEL": "amazon.titan-embed-text-v2:0",
+            "VECTOR_STORE": "pgvector",
+        }
+
+        with monkeypatch.context() as mp:
+            for key in (
+                "IDENTITY_PROVIDER",
+                "COGNITO_USER_POOL_ID",
+                "COGNITO_CLIENT_ID",
+                "CORS_ORIGINS",
+                "BEDROCK_GUARDRAIL_ID",
+                "BEDROCK_GUARDRAIL_VERSION",
+            ):
+                mp.delenv(key, raising=False)
+            for k, v in ing_vars.items():
+                mp.setenv(k, v)
+            ws = WorkerSettings()
+            assert ws.environment is Environment(env_name)
+            assert ws.llm_provider == "bedrock"
+            assert ws.bedrock.embedding_model == "amazon.titan-embed-text-v2:0"
+            container = build_worker_container(ws)
+            assert isinstance(container.embeddings, BedrockEmbeddingProvider)
+
+        common_wf_vars = {
+            "ENVIRONMENT": env_name,
+            "LLM_PROVIDER": "bedrock",
+            "ENABLE_AGENTIC_WORKFLOWS": "true",
+            "VECTOR_STORE": "pgvector",
+            "AWS_AURORA_CLUSTER_ARN": f"arn:aws:rds:us-east-1:123456789012:cluster:cg-{env_name}",
+            "AWS_AURORA_SECRET_ARN": (
+                f"arn:aws:secretsmanager:us-east-1:123456789012:secret:cg-{env_name}"
+            ),
+            "DB_NAME": "cloudguard",
+        }
+        if env_name == "prod":
+            common_wf_vars["BEDROCK_GUARDRAIL_ID"] = "gr-prod-123"
+            common_wf_vars["BEDROCK_GUARDRAIL_VERSION"] = "1"
+
+        worker_envs = {
+            "app.deployed_research_agent_worker.handler": {
+                **common_wf_vars,
+                "BEDROCK_CHAT_MODEL": "anthropic.claude-haiku-4-5-20251001-v1:0",
+                "BEDROCK_EMBEDDING_MODEL": "amazon.titan-embed-text-v2:0",
+                "RATE_LIMIT_TABLE_NAME": f"cloudguard-api-rate-limits-{env_name}",
+            },
+            "app.deployed_risk_agent_worker.handler": {
+                **common_wf_vars,
+                "BEDROCK_CHAT_MODEL": "anthropic.claude-haiku-4-5-20251001-v1:0",
+                "RATE_LIMIT_TABLE_NAME": f"cloudguard-api-rate-limits-{env_name}",
+            },
+            "app.deployed_reviewer_agent_worker.handler": {
+                **common_wf_vars,
+                "BEDROCK_JUDGE_MODEL": "amazon.nova-pro-v1:0",
+                "RATE_LIMIT_TABLE_NAME": f"cloudguard-api-rate-limits-{env_name}",
+            },
+            "app.deployed_approval_creation_worker.handler": dict(common_wf_vars),
+            "app.deployed_approval_callback_recovery_worker.handler": dict(common_wf_vars),
+            "app.deployed_approved_action_execution_worker.handler": dict(common_wf_vars),
+        }
+
+        for cmd, fn_vars in worker_envs.items():
+            with monkeypatch.context() as mp:
+                for key in (
+                    "IDENTITY_PROVIDER",
+                    "COGNITO_USER_POOL_ID",
+                    "COGNITO_CLIENT_ID",
+                    "CORS_ORIGINS",
+                    "BEDROCK_GUARDRAIL_ID",
+                    "BEDROCK_GUARDRAIL_VERSION",
+                ):
+                    mp.delenv(key, raising=False)
+                for k, v in fn_vars.items():
+                    mp.setenv(k, v)
+
+                if cmd in (
+                    "app.deployed_approval_creation_worker.handler",
+                    "app.deployed_approval_callback_recovery_worker.handler",
+                    "app.deployed_approved_action_execution_worker.handler",
+                ):
+                    mp.delenv("BEDROCK_GUARDRAIL_ID", raising=False)
+                    mp.delenv("BEDROCK_GUARDRAIL_VERSION", raising=False)
+                    mp.delenv("LLM_PROVIDER", raising=False)
+                    aws_settings = ApprovalWorkerSettings()
+                    assert aws_settings.environment is Environment(env_name)
+                    assert aws_settings.features.agentic_workflows is True
+                else:
+                    agent_settings = AgentWorkerSettings()
+                    assert agent_settings.environment is Environment(env_name)
+                    assert agent_settings.llm_provider == "bedrock"
