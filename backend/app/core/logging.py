@@ -31,7 +31,12 @@ import structlog
 from structlog.contextvars import bind_contextvars, clear_contextvars
 from structlog.typing import EventDict, WrappedLogger
 
-from app.core.config import AgentWorkerSettings, Settings, WorkerSettings
+from app.core.config import (
+    AgentWorkerSettings,
+    ApprovalWorkerSettings,
+    Settings,
+    WorkerSettings,
+)
 
 REDACTED = "[redacted]"
 
@@ -131,7 +136,9 @@ def redact_sensitive(
     }
 
 
-def configure_logging(settings: Settings | WorkerSettings | AgentWorkerSettings) -> None:
+def configure_logging(
+    settings: Settings | WorkerSettings | AgentWorkerSettings | ApprovalWorkerSettings,
+) -> None:
     """Idempotent. Safe to call from both the ASGI app and the Lambda handler."""
     shared: list[Any] = [
         structlog.contextvars.merge_contextvars,

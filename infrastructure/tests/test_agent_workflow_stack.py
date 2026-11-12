@@ -325,3 +325,88 @@ def test_agent_workflow_synthesizes_guardrail_environment_and_policy() -> None:
     serialized = json.dumps(all_policies)
     assert "bedrock:ApplyGuardrail" in serialized
     assert "arn:aws:bedrock:us-east-1:123456789012:guardrail/prod-guardrail-xyz" in serialized
+
+
+def test_synthesized_worker_environment_contracts_across_dev_staging_and_prod() -> None:
+    """CDK synthesis for dev, staging, and prod emits expected Identity-free worker environments."""
+    import aws_cdk as cdk
+    from stacks.agent_workflow_stack import AgentWorkflowStack
+    from stacks.ingestion_stack import IngestionStack
+
+    for env_name in ("dev", "staging", "prod"):
+        app = cdk.App()
+        ingestion = IngestionStack(
+            app,
+            f"SynthIngestion-{env_name}",
+            environment_name=env_name,
+            aurora_cluster_arn=f"arn:aws:rds:us-east-1:123456789012:cluster:cg-{env_name}",
+            aurora_secret_arn=f"arn:aws:secretsmanager:us-east-1:123456789012:secret:cg-{env_name}",
+            event_bus_name="cloudguard-events",
+            embedding_model_id="amazon.titan-embed-text-v2:0",
+            admission_table_name=f"cloudguard-api-rate-limits-{env_name}",
+            admission_table_arn=(
+                f"arn:aws:dynamodb:us-east-1:123456789012:table/"
+                f"cloudguard-api-rate-limits-{env_name}"
+            ),
+            env=cdk.Environment(account="123456789012", region="us-east-1"),
+        )
+        workflow = AgentWorkflowStack(
+            app,
+            f"SynthWorkflow-{env_name}",
+            environment_name=env_name,
+            aurora_cluster_arn=f"arn:aws:rds:us-east-1:123456789012:cluster:cg-{env_name}",
+            aurora_secret_arn=f"arn:aws:secretsmanager:us-east-1:123456789012:secret:cg-{env_name}",
+            chat_model_id="anthropic.claude-haiku-4-5-20251001-v1:0",
+            reviewer_model_id="amazon.nova-pro-v1:0",
+            embedding_model_id="amazon.titan-embed-text-v2:0",
+            agentic_workflows_enabled=True,
+            admission_table_name=f"cloudguard-api-rate-limits-{env_name}",
+            admission_table_arn=(
+                f"arn:aws:dynamodb:us-east-1:123456789012:table/"
+                f"cloudguard-api-rate-limits-{env_name}"
+            ),
+            guardrail_id="gr-prod-123" if env_name == "prod" else None,
+            guardrail_version="1" if env_name == "prod" else None,
+            env=cdk.Environment(account="123456789012", region="us-east-1"),
+        )
+
+        ing_template = assertions.Template.from_stack(ingestion).to_json()
+        wf_template = assertions.Template.from_stack(workflow).to_json()
+
+        ing_fn = next(
+            r["Properties"]
+            for r in ing_template["Resources"].values()
+            if r.get("Type") == "AWS::Lambda::Function"
+            and r["Properties"].get("PackageType") == "Image"
+        )
+        ing_vars = ing_fn["Environment"]["Variables"]
+        assert ing_vars["ENVIRONMENT"] == env_name
+        assert ing_vars["DOCUMENT_STORE"] == "s3"
+        assert ing_vars["LLM_PROVIDER"] == "bedrock"
+        assert ing_vars["BEDROCK_EMBEDDING_MODEL"] == "amazon.titan-embed-text-v2:0"
+        assert "IDENTITY_PROVIDER" not in ing_vars
+        assert "COGNITO_USER_POOL_ID" not in ing_vars
+        assert "CORS_ORIGINS" not in ing_vars
+
+        wf_cmds: set[str] = set()
+        for resource in wf_template["Resources"].values():
+            if resource.get("Type") != "AWS::Lambda::Function":
+                continue
+            props = resource["Properties"]
+            cmd = props["ImageConfig"]["Command"][0]
+            wf_cmds.add(cmd)
+            fn_vars = props["Environment"]["Variables"]
+            assert fn_vars["ENVIRONMENT"] == env_name
+            assert fn_vars["ENABLE_AGENTIC_WORKFLOWS"] == "true"
+            assert "IDENTITY_PROVIDER" not in fn_vars
+            assert "COGNITO_USER_POOL_ID" not in fn_vars
+            assert "CORS_ORIGINS" not in fn_vars
+
+        assert wf_cmds == {
+            "app.deployed_research_agent_worker.handler",
+            "app.deployed_risk_agent_worker.handler",
+            "app.deployed_reviewer_agent_worker.handler",
+            "app.deployed_approval_creation_worker.handler",
+            "app.deployed_approval_callback_recovery_worker.handler",
+            "app.deployed_approved_action_execution_worker.handler",
+        }

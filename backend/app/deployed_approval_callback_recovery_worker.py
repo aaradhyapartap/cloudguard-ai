@@ -12,7 +12,8 @@ from app.adapters.aws.approval_callback import (
 from app.adapters.aws.approval_callback_recovery_repository import (
     AuroraDataAPIApprovalCallbackRecoveryRepository,
 )
-from app.core.config import get_settings
+from app.core.config import get_approval_worker_settings
+from app.core.logging import configure_logging
 from app.security.worker_errors import sanitize_worker_failures
 from app.services.approval_callback import ApprovalCallbackService
 
@@ -22,7 +23,7 @@ APPROVAL_BATCH_SIZE = 25
 
 
 def _build_repository() -> AuroraDataAPIApprovalCallbackRecoveryRepository:
-    settings = get_settings()
+    settings = get_approval_worker_settings()
 
     resource_arn = settings.aws.aurora_cluster_arn
     secret_arn = settings.aws.aurora_secret_arn
@@ -42,7 +43,7 @@ def _build_repository() -> AuroraDataAPIApprovalCallbackRecoveryRepository:
 
 
 def _build_callback() -> StepFunctionsApprovalCallback:
-    settings = get_settings()
+    settings = get_approval_worker_settings()
 
     return StepFunctionsApprovalCallback(
         region=settings.aws.region,
@@ -130,6 +131,7 @@ def handler(
     """
 
     del event, context
+    configure_logging(get_approval_worker_settings())
 
     return asyncio.run(
         _run()

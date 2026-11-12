@@ -60,6 +60,7 @@ class IngestionStack(cdk.Stack):
         event_bus_name: str,
         admission_table_name: str,
         admission_table_arn: str,
+        embedding_model_id: str = "amazon.titan-embed-text-v2:0",
         s3_vector_index_arn: str | None = None,
         **kwargs: object,
     ) -> None:
@@ -112,6 +113,8 @@ class IngestionStack(cdk.Stack):
             "AWS_DOCUMENTS_BUCKET": self.documents_bucket.bucket_name,
             "EVENT_PUBLISHER": "eventbridge",
             "AWS_EVENT_BUS_NAME": self.event_bus.event_bus_name,
+            "LLM_PROVIDER": "bedrock",
+            "BEDROCK_EMBEDDING_MODEL": embedding_model_id,
             "VECTOR_STORE": "s3_vectors" if s3_vector_index_arn else "pgvector",
         }
         if s3_vector_index_arn:
@@ -169,6 +172,21 @@ class IngestionStack(cdk.Stack):
 
         # EventBridge publish access for domain events (scoped to custom event bus ARN)
         self.event_bus.grant_put_events_to(self.processing_function)
+
+        # Model-scoped Bedrock InvokeModel permission for document embeddings
+        embedding_model_arn = self.format_arn(
+            service="bedrock",
+            resource="foundation-model",
+            resource_name=embedding_model_id,
+            account="",
+        )
+        self.processing_function.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["bedrock:InvokeModel"],
+                resources=[embedding_model_arn],
+            )
+        )
 
         # S3 Vectors permissions if vector index ARN is configured
         if s3_vector_index_arn:

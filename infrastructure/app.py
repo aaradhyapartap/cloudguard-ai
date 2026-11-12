@@ -197,6 +197,7 @@ ingestion = IngestionStack(
     aurora_cluster_arn=aurora_cluster_arn,
     aurora_secret_arn=aurora_secret_arn,
     event_bus_name=event_bus_name,
+    embedding_model_id=embedding_model_id,
     admission_table_name=rate_limits.table.table_name,
     admission_table_arn=rate_limits.table.table_arn,
     s3_vector_index_arn=s3_vector_index_arn,

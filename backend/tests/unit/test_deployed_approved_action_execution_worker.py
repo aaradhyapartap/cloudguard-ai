@@ -1,4 +1,4 @@
-﻿"""Tests for the deployed approved-action execution worker boundary."""
+"""Tests for the deployed approved-action execution worker boundary."""
 
 from __future__ import annotations
 
@@ -62,3 +62,45 @@ def test_worker_rejects_supplied_organization_override() -> None:
         ApprovedActionExecutionWorkflowTaskInput.model_validate(
             event
         )
+
+
+@pytest.mark.parametrize("env_name", ["dev", "staging", "prod"])
+def test_approved_action_execution_worker_starts_with_synthesized_env_without_cognito_or_guardrail(
+    monkeypatch: pytest.MonkeyPatch,
+    env_name: str,
+) -> None:
+    """Approved-action worker starts in dev/staging/prod without Cognito or Guardrail."""
+    import app.deployed_approved_action_execution_worker as worker
+    from app.adapters.aws.approval_execution_repository import (
+        AuroraDataAPIApprovalExecutionRepository,
+    )
+    from app.core.config import get_approval_worker_settings
+
+    for key in (
+        "IDENTITY_PROVIDER",
+        "COGNITO_USER_POOL_ID",
+        "COGNITO_CLIENT_ID",
+        "CORS_ORIGINS",
+        "BEDROCK_GUARDRAIL_ID",
+        "BEDROCK_GUARDRAIL_VERSION",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("ENVIRONMENT", env_name)
+    monkeypatch.setenv(
+        "AWS_AURORA_CLUSTER_ARN",
+        "arn:aws:rds:us-east-1:111122223333:cluster:cloudguard",
+    )
+    monkeypatch.setenv(
+        "AWS_AURORA_SECRET_ARN",
+        "arn:aws:secretsmanager:us-east-1:111122223333:secret:cloudguard",
+    )
+    monkeypatch.setenv("DB_NAME", "cloudguard")
+    monkeypatch.setenv("ENABLE_AGENTIC_WORKFLOWS", "true")
+    get_approval_worker_settings.cache_clear()
+
+    try:
+        repo = worker._build_repository()
+        assert isinstance(repo, AuroraDataAPIApprovalExecutionRepository)
+    finally:
+        get_approval_worker_settings.cache_clear()

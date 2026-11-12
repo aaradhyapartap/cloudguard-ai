@@ -257,3 +257,39 @@ def test_local_worker_imports_tenant_session() -> None:
     assert "SQLAlchemyDocumentProcessingRepository" in imported_names, (
         "local document_worker must import SQLAlchemyDocumentProcessingRepository"
     )
+
+
+@pytest.mark.parametrize("env_name", ["dev", "staging", "prod"])
+def test_deployed_ingestion_selects_bedrock_embedding_provider_across_environments(
+    monkeypatch: pytest.MonkeyPatch,
+    env_name: str,
+) -> None:
+    """Synthesized ingestion environment selects BedrockEmbeddingProvider with matching model."""
+    from app.adapters.bedrock.embedding import BedrockEmbeddingProvider
+    from app.core.config import WorkerSettings
+    from app.core.container import build_worker_container
+
+    monkeypatch.setenv("ENVIRONMENT", env_name)
+    monkeypatch.setenv("DOCUMENT_STORE", "s3")
+    monkeypatch.setenv("AWS_DOCUMENTS_BUCKET", f"cloudguard-documents-{env_name}-111122223333")
+    monkeypatch.setenv("EVENT_PUBLISHER", "eventbridge")
+    monkeypatch.setenv("AWS_EVENT_BUS_NAME", "cloudguard-events")
+    monkeypatch.setenv("LLM_PROVIDER", "bedrock")
+    monkeypatch.setenv("BEDROCK_EMBEDDING_MODEL", "amazon.titan-embed-text-v2:0")
+    monkeypatch.setenv("VECTOR_STORE", "pgvector")
+    monkeypatch.setenv("RATE_LIMIT_TABLE_NAME", f"cloudguard-api-rate-limits-{env_name}")
+    monkeypatch.setenv(
+        "AWS_AURORA_CLUSTER_ARN",
+        "arn:aws:rds:us-east-1:111122223333:cluster:cloudguard",
+    )
+    monkeypatch.setenv(
+        "AWS_AURORA_SECRET_ARN",
+        "arn:aws:secretsmanager:us-east-1:111122223333:secret:cloudguard",
+    )
+
+    settings = WorkerSettings()
+    container = build_worker_container(settings)
+
+    assert isinstance(container.embeddings, BedrockEmbeddingProvider)
+    assert settings.bedrock.embedding_model == "amazon.titan-embed-text-v2:0"
+    assert settings.bedrock.embedding_dimensions == 1024
