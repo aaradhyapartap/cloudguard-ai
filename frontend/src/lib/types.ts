@@ -181,3 +181,337 @@ export interface EvaluationDatasetMetadata {
   metric_definitions: Record<string, string>;
   known_limitations: string[];
 }
+
+export interface Page<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export type DocumentType =
+  | 'policy'
+  | 'audit_report'
+  | 'control_documentation'
+  | 'financial_report'
+  | 'invoice'
+  | 'erp_export'
+  | 'sop'
+  | 'risk_report'
+  | 'vendor_document'
+  | 'contract'
+  | 'security_policy'
+  | 'unknown';
+
+export type ConfidentialityLevel = 'public' | 'internal' | 'confidential' | 'restricted';
+
+export type ProcessingStatus =
+  | 'queued'
+  | 'extracting'
+  | 'indexing'
+  | 'ready'
+  | 'failed'
+  | 'quarantined';
+
+export interface DocumentCreateRequest {
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  document_type: DocumentType;
+  confidentiality_level: ConfidentialityLevel;
+  department?: string | null;
+  source?: string | null;
+  tags?: string[];
+}
+
+export interface DocumentResponse {
+  id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  document_type: DocumentType;
+  confidentiality_level: ConfidentialityLevel;
+  processing_status: ProcessingStatus;
+  processing_error: string | null;
+  uploader_id: string;
+  department: string | null;
+  source: string | null;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DocumentUploadResponse {
+  document: DocumentResponse;
+  upload_url: string;
+  expires_in_seconds: number;
+}
+
+export interface VectorMatch {
+  chunk_id: string;
+  document_id: string;
+  score: number;
+  content: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface RetrievalRequest {
+  query: string;
+  top_k?: number;
+  document_ids?: string[] | null;
+}
+
+export interface RetrievalResponse {
+  matches: VectorMatch[];
+  total: number;
+}
+
+export interface TokenUsage {
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_input_tokens?: number;
+  total_tokens?: number | null;
+}
+
+export interface RAGRequest {
+  query: string;
+  top_k?: number;
+  document_ids?: string[] | null;
+}
+
+export interface RAGSource {
+  label: string;
+  chunk_id: string;
+  document_id: string;
+  score: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface RAGResponse {
+  answer: string;
+  sources: RAGSource[];
+  retrieval_count: number;
+  model_id: string;
+  usage: TokenUsage | null;
+}
+
+export type RiskClassification = 'not_scored' | 'low' | 'medium' | 'high' | 'critical';
+
+export type ControlStatus =
+  | 'satisfied'
+  | 'partially_satisfied'
+  | 'deficient'
+  | 'unassessed'
+  | 'not_applicable';
+
+export type AssessmentStatus = 'draft' | 'in_progress' | 'completed' | 'archived';
+
+export interface ScoreOverrideResponse {
+  id: string;
+  organization_id: string;
+  assessment_id: string;
+  snapshot_id: string;
+  source_revision_number: number;
+  original_overall_score: string | number | null;
+  original_risk_classification: RiskClassification;
+  override_overall_score: string | number;
+  override_risk_classification: RiskClassification;
+  justification: string;
+  overridden_by: string;
+  overridden_at: string;
+}
+
+export interface ComplianceAssessmentResponse {
+  id: string;
+  organization_id: string;
+  framework_id: string;
+  title: string;
+  status: AssessmentStatus;
+  overall_score: string | number | null;
+  risk_classification: RiskClassification;
+  scoring_version: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  effective_overall_score?: string | number | null;
+  effective_risk_classification?: RiskClassification | null;
+  latest_override?: ScoreOverrideResponse | null;
+}
+
+export interface VisibleEvidenceReference {
+  id: string;
+  control_assessment_id: string;
+  document_id: string;
+  chunk_id: string | null;
+  confidentiality_level: ConfidentialityLevel;
+  snippet: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+export interface ControlAssessmentProjection {
+  id: string;
+  organization_id: string;
+  assessment_id: string;
+  control_id: string;
+  status: ControlStatus;
+  effective_weight: string | number;
+  rationale: string | null;
+  created_at: string;
+  updated_at: string;
+  evidence: VisibleEvidenceReference[];
+  hidden_evidence_present: boolean;
+}
+
+export interface ComplianceAssessmentProjection extends ComplianceAssessmentResponse {
+  controls: ControlAssessmentProjection[];
+  any_hidden_evidence: boolean;
+}
+
+export interface ControlAssessmentUpdateRequest {
+  status?: ControlStatus;
+  effective_weight?: number | string;
+  rationale?: string | null;
+}
+
+export interface ControlAssessmentResponse {
+  id: string;
+  organization_id: string;
+  assessment_id: string;
+  control_id: string;
+  status: ControlStatus;
+  effective_weight: string | number;
+  rationale: string | null;
+  created_at: string;
+  updated_at: string;
+  evidence_count: number;
+}
+
+export interface AssessmentScoreResult {
+  scoring_version: string;
+  framework_id: string;
+  framework_version: string;
+  applicable_control_count: number;
+  total_control_count: number;
+  overall_score: string | number | null;
+  residual_risk: string | number | null;
+  risk_classification: RiskClassification;
+  critical_override_triggered: boolean;
+}
+
+export interface AssessmentScoreSnapshotProjection {
+  id: string;
+  organization_id: string;
+  assessment_id: string;
+  revision_number: number;
+  scoring_version: string;
+  framework_version: string;
+  raw_scores: Record<string, unknown>;
+  overall_score: string | number | null;
+  risk_classification: RiskClassification;
+  computed_by: string | null;
+  computed_at: string;
+}
+
+export interface CandidateEvidenceReference {
+  chunk_id: string;
+  document_id: string;
+  quote: string;
+  relevance_explanation: string | null;
+  confidence: number | null;
+}
+
+export interface ComplianceCandidateFinding {
+  control_id: string;
+  proposed_status: ControlStatus;
+  rationale: string;
+  evidence_references: CandidateEvidenceReference[];
+  confidence: number | null;
+}
+
+export interface ComplianceCandidateExtractionResult {
+  assessment_id: string;
+  framework_id: string;
+  findings: ComplianceCandidateFinding[];
+  retrieved_chunk_count: number;
+  evaluated_control_count: number;
+  model_id: string;
+  extracted_at: string;
+}
+
+export type ApprovalDecision = 'approved' | 'rejected' | 'modified';
+export type ApprovalStatus =
+  | 'pending'
+  | 'decided'
+  | 'execution_succeeded'
+  | 'execution_failed';
+
+export interface ApprovalAction {
+  action_type: string;
+  resource_type: string;
+  resource_id: string;
+  summary: string;
+}
+
+export interface ApprovalEvidenceReference {
+  chunk_id: string;
+  document_id: string;
+}
+
+export interface ApprovalScoreComponentBreakdown {
+  scoring_version: string;
+  total_controls: number;
+  applicable_controls: number;
+  sum_weights: string | number;
+  sum_weighted_scores: string | number;
+  critical_override_triggered: boolean;
+}
+
+export interface ApprovalScoreContext {
+  score: string | number;
+  scoring_version: string;
+  component_breakdown: ApprovalScoreComponentBreakdown;
+}
+
+export interface PendingApproval {
+  id: string;
+  organization_id: string;
+  workflow_execution_id: string;
+  recommendation_id: string;
+  proposed_action: ApprovalAction;
+  evidence: ApprovalEvidenceReference[];
+  score_context: ApprovalScoreContext | null;
+  agent_trace_ids: string[];
+  generator_model_id: string | null;
+  reviewer_model_id: string | null;
+  status: 'pending';
+  created_at: string;
+}
+
+export interface DecidedApproval extends Omit<PendingApproval, 'status'> {
+  status: 'decided' | 'execution_succeeded' | 'execution_failed';
+  decision: ApprovalDecision;
+  approver_id: string;
+  decided_at: string;
+  justification: string | null;
+  comment: string | null;
+  modified_action: ApprovalAction | null;
+}
+
+export interface ApprovalDecisionRequest {
+  decision: ApprovalDecision;
+  justification?: string | null;
+  comment?: string | null;
+  modified_action?: ApprovalAction | null;
+}
+
+export interface SystemConfigResponse {
+  environment: string;
+  llm_provider: string;
+  vector_store: string;
+  document_store: string;
+  event_publisher: string;
+  chat_model: string;
+  embedding_model: string;
+  feature_flags: Record<string, boolean>;
+}

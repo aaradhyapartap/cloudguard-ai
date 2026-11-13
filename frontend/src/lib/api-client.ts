@@ -77,4 +77,6 @@ export const api = {
     request<T>(path, { ...options, method: 'GET' }),
   post: <T>(path: string, body: unknown, options?: RequestOptions) =>
     request<T>(path, { ...options, method: 'POST', body: JSON.stringify(body) }),
+  patch: <T>(path: string, body: unknown, options?: RequestOptions) =>
+    request<T>(path, { ...options, method: 'PATCH', body: JSON.stringify(body) }),
 };
