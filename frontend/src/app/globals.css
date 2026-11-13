@@ -23,38 +23,44 @@
 */
 
 @theme {
-  /* Surfaces — cool neutral, low chroma */
-  --color-canvas: #f7f8f9;
+  /* Surfaces — warm ivory canvas with crisp white cards */
+  --color-canvas: #faf8f5;
   --color-surface: #ffffff;
-  --color-surface-sunken: #eef0f2;
-  --color-line: #dcdfe3;
-  --color-line-strong: #c3c8ce;
+  --color-surface-sunken: #f2efe9;
+  --color-line: #e4dfd5;
+  --color-line-strong: #cec6b8;
 
   /* Ink */
-  --color-ink: #14181d;
-  --color-ink-muted: #5b636d;
-  --color-ink-subtle: #868e98;
-  --color-ink-inverse: #f7f8f9;
+  --color-ink: #111827;
+  --color-ink-muted: #4b5563;
+  --color-ink-subtle: #6b7280;
+  --color-ink-inverse: #f9fafb;
 
-  /* Navigation rail — deliberately darker than the canvas so the workspace,
-     not the chrome, is where the eye lands. */
-  --color-rail: #1b2027;
-  --color-rail-hover: #262d36;
-  --color-rail-active: #323b46;
+  /* Navigation rail — deep navy/graphite */
+  --color-rail: #0f172a;
+  --color-rail-hover: #1e293b;
+  --color-rail-active: #064e3b;
+  --color-rail-border: #1e293b;
+
+  /* Primary accent — restrained emerald */
+  --color-accent: #047857;
+  --color-accent-hover: #065f46;
+  --color-accent-soft: #ecfdf5;
+  --color-accent-border: #a7f3d0;
 
   /* Severity ramp. Ordered, and used only for severity. */
-  --color-severity-critical: #a4193d;
-  --color-severity-high: #c2410c;
+  --color-severity-critical: #991b1b;
+  --color-severity-high: #b45309;
   --color-severity-medium: #a16207;
-  --color-severity-low: #15706b;
+  --color-severity-low: #047857;
 
   /* System states */
-  --color-ok: #15706b;
-  --color-warn: #a16207;
-  --color-error: #a4193d;
+  --color-ok: #047857;
+  --color-warn: #b45309;
+  --color-error: #991b1b;
 
-  --radius-sm: 2px;
-  --radius-md: 4px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
 
   --font-sans:
     var(--font-plex-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;

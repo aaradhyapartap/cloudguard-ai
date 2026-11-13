@@ -121,12 +121,12 @@ export default function AnalyticsPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-8">
-      <header className="flex flex-wrap items-start justify-between gap-4">
+      <header className="flex flex-wrap items-start justify-between gap-4 border-b border-[var(--color-line)] pb-5">
         <div>
-          <p className="font-mono text-[11px] uppercase tracking-wider text-[var(--color-ink-subtle)]">
-            Phase 9 · AI Quality &amp; Security Harness
+          <p className="font-mono text-[11px] uppercase tracking-wider text-[var(--color-accent)]">
+            AI Quality &amp; Security Harness
           </p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-[var(--color-ink)]">
             Evaluation &amp; Analytics
           </h1>
           <p className="mt-1 max-w-2xl text-sm text-[var(--color-ink-muted)]">
@@ -153,7 +153,7 @@ export default function AnalyticsPage() {
                 type="button"
                 onClick={() => void handleTriggerEvaluation()}
                 disabled={runningEval}
-                className="rounded-[var(--radius-sm)] bg-[var(--color-ink)] px-3.5 py-1.5 text-xs font-medium text-[var(--color-ink-inverse)] disabled:opacity-50"
+                className="rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3.5 py-1.5 text-xs font-medium text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-50"
               >
                 {runningEval ? 'Running Suite…' : 'Run Evaluation Suite'}
               </button>
